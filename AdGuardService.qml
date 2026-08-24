@@ -56,6 +56,10 @@ Item {
   readonly property int settleIntervalMs: 1500
   readonly property int settleTicks: 3
 
+  // Set when a status run produces a parseable answer, so a run that produced none is known.
+  property bool _statusAnswered: false
+  // True once any run has been understood, which is what the panel may state facts from.
+  property bool hasAnswer: false
   property int _rampTicks: 0
   property int _settleRemaining: 0
   // A refresh that fails leaves the timestamp where it was, so without this the next poll
@@ -66,6 +70,8 @@ Item {
   function apply(raw) {
     var s = Model.parseStatus(raw)
     root.polled = true
+    root._statusAnswered = true
+    if (s.parsed) root.hasAnswer = true
     // An unreadable answer says nothing about AdGuard, so both the last known state and a
     // pending click's intent are left standing.
     if (!s.parsed) {
@@ -89,7 +95,16 @@ Item {
 
   function refresh() {
     if (statusProcess.running || actionProcess.running) return
+    root._statusAnswered = false
     statusProcess.running = true
+  }
+
+  // The helper always prints one object and exits 0, so a run that did neither never ran.
+  // Deferred, because the exit and the stream have no ordering guarantee between them.
+  function noteSilentRun() {
+    if (root._statusAnswered) return
+    root.lastError = "The AdGuard helper did not run."
+    root.polled = true
   }
 
   // Returns whether the command actually launched, because a caller that flips optimistic
@@ -129,6 +144,7 @@ Item {
   Process {
     id: statusProcess
     command: [root.helperPath, "status"]
+    onExited: Qt.callLater(root.noteSilentRun)
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -186,7 +202,12 @@ Item {
     repeat: true
     onTriggered: {
       root._settleRemaining--
-      if (root._settleRemaining <= 0) settleTimer.running = false
+      if (root._settleRemaining <= 0) {
+        settleTimer.running = false
+        // The settle window bounds the optimistic value, so a helper that never answers
+        // cannot leave the switch asserting a click reality never confirmed.
+        root._desiredRunning = -1
+      }
       root.refresh()
     }
   }

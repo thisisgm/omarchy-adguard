@@ -219,6 +219,17 @@ Panel {
         }
 
         Text {
+          visible: !adguard.hasAnswer
+          width: parent.width
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          text: "Waiting for AdGuard."
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+        }
+
+        Text {
           visible: root.transientText !== ""
           width: parent.width
           textFormat: Text.PlainText
@@ -245,7 +256,7 @@ Panel {
         PanelSeparator { width: parent.width; foreground: root.foreground }
 
         Repeater {
-          model: root.statRows
+          model: adguard.hasAnswer ? root.statRows : []
           delegate: StatRow {
             required property var modelData
             width: column.width
@@ -257,19 +268,21 @@ Panel {
         PanelSeparator { width: parent.width; foreground: root.foreground }
 
         StatRow {
+          visible: adguard.hasAnswer
           width: parent.width
           label: "Filters"
           value: Model.filtersMeta(adguard.filters)
         }
 
         StatRow {
+          visible: adguard.hasAnswer
           width: parent.width
           label: "HTTPS filtering"
           value: adguard.httpsFiltering ? "on" : "off"
         }
 
         StatRow {
-          visible: adguard.lastUpdateTs > 0
+          visible: adguard.hasAnswer && adguard.lastUpdateTs > 0
           width: parent.width
           label: "Last updated"
           value: Model.updatedAgo(adguard.lastUpdateTs, root.nowSec).replace("updated ", "")
@@ -278,6 +291,7 @@ Panel {
         PanelSeparator { width: parent.width; foreground: root.foreground }
 
         Button {
+          visible: adguard.hasAnswer
           width: parent.width
           // The control reports its own progress and outcome, so neither needs a line of
           // its own above the numbers.
