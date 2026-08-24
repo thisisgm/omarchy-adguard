@@ -85,6 +85,8 @@ check-update)
   # The steady state is the transcript the real CLI prints, bare "Updated" lines included.
   if [[ ${STUB_UPDATED_ODD:-0} == "1" ]]; then
     printf 'Something this version has never printed\n'
+  elif [[ ${STUB_UPDATED_COUNTED_NONSUCCESS:-0} == "1" ]]; then
+    printf 'Up to date\n3 lists could not be reached\n'
   else
     printf 'Checking filters updates...\n'
     if [[ ${STUB_UPDATED:-0} == "1" ]]; then

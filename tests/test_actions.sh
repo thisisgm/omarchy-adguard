@@ -118,3 +118,9 @@ chmod 644 "$HOME/.local/share/adguard-cli/logs/access.log"
 reset_state
 assert_eq "an absent log is a real zero" "true" "$("$helper" status | field ok)"
 assert_eq "an absent log reports no blocks" "0" "$("$helper" status | field blockedToday)"
+
+# A counted line only means a refresh when it also says updated, or "3 lists could not be
+# reached" would read as a successful update.
+reset_state
+assert_eq "a counted line that is not a success is not a refresh" '"Everything is already up to date"' \
+  "$(STUB_UPDATED_COUNTED_NONSUCCESS=1 "$helper" update | field updateSummary)"

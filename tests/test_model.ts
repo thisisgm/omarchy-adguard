@@ -134,3 +134,42 @@ Deno.test("updatedAgo uses the coarsest unit that is still true", () => {
 Deno.test("updatedAgo never reads as the future", () => {
   assertEquals(model.updatedAgo(2000, 1000), "updated just now")
 })
+
+// parsed says the document was readable; ok says AdGuard is healthy. The service keeps the
+// last known state when parsed is false, so conflating the two wipes good numbers.
+Deno.test("parsed separates an unreadable answer from an unhealthy one", () => {
+  assertEquals(model.parseStatus(JSON.stringify(snapshot())).parsed, true)
+  assertEquals(model.parseStatus(JSON.stringify(snapshot({ ok: false }))).parsed, true)
+  for (const raw of ["", "nonsense", "{}", "null", "[]"]) {
+    assertEquals(model.parseStatus(raw).parsed, false)
+  }
+})
+
+// The sample-input comment is documentation, so it has to survive its own validator.
+Deno.test("the documented helper sample validates", () => {
+  const documented = {
+    ok: true, installed: true, running: true, httpsFiltering: true, blockedToday: 70,
+    filters: [{ id: 2, title: "AdGuard Base filter", enabled: true, category: "Ad blocking", blocked: 11 }],
+    exitNodeActive: false, updateSummary: "", lastUpdateTs: 1787538763, error: "",
+  }
+  const s = model.parseStatus(JSON.stringify(documented))
+  assertEquals(s.parsed, true)
+  assertEquals(s.filters.length, 1)
+})
+
+// A dropped row used to leave a smaller list looking healthy.
+Deno.test("a dropped filter row is reported rather than passed off as a shorter list", () => {
+  const s = model.parseStatus(JSON.stringify(snapshot({
+    filters: [filter({ id: 2 }), filter({ id: "3" }), filter({ id: 4 })],
+  })))
+  assertEquals(s.filters.length, 2)
+  assertEquals(s.error, "Some filters could not be read.")
+})
+
+Deno.test("a helper error is not overwritten by the dropped-row message", () => {
+  const s = model.parseStatus(JSON.stringify(snapshot({
+    error: "adguard-cli status failed.",
+    filters: [filter({ id: 2 }), filter({ id: "3" })],
+  })))
+  assertEquals(s.error, "adguard-cli status failed.")
+})

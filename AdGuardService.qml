@@ -49,6 +49,7 @@ Item {
   readonly property int filterUpdateHours: intSetting("filterUpdateHours", 6, 0, 168)
 
   readonly property int millisecondsPerSecond: 1000
+  readonly property int secondsPerHour: 3600
   readonly property int actionStatusDurationMs: 2200
   readonly property int startupRampIntervalMs: 2000
   readonly property int startupRampMaxTicks: 15
@@ -64,6 +65,14 @@ Item {
 
   function apply(raw) {
     var s = Model.parseStatus(raw)
+    root.polled = true
+    // An unreadable answer says nothing about AdGuard, so the last known state is kept.
+    if (!s.parsed) {
+      root.ok = false
+      root.lastError = s.error
+      root._desiredRunning = -1
+      return
+    }
     root.ok = s.ok
     root.installed = s.installed
     root.running = s.running
@@ -74,7 +83,6 @@ Item {
     root.lastError = s.error
     if (s.updateSummary !== "") root.updateSummary = s.updateSummary
     root.lastUpdateTs = s.lastUpdateTs
-    root.polled = true
     // Reality has spoken, so stop overriding it.
     root._desiredRunning = -1
   }
@@ -84,19 +92,22 @@ Item {
     statusProcess.running = true
   }
 
+  // Returns whether the command actually launched, because a caller that flips optimistic
+  // state for a run that never started leaves the panel asserting the opposite of reality.
   function run(args, note, kind) {
-    if (statusProcess.running || actionProcess.running) return
+    if (statusProcess.running || actionProcess.running) return false
     root.actionStatus = note
     root.actionKind = kind || ""
     root.updateSummary = ""
     actionProcess.command = [root.helperPath].concat(args)
     actionProcess.running = true
+    return true
   }
 
   function toggleProtection() {
     var turningOn = !root.effectiveRunning
+    if (!run(["protection", turningOn ? "on" : "off"], turningOn ? "Starting" : "Stopping", "protection")) return
     root._desiredRunning = turningOn ? 1 : 0
-    run(["protection", turningOn ? "on" : "off"], turningOn ? "Starting" : "Stopping", "protection")
   }
 
   function updateFilters() {
@@ -107,18 +118,22 @@ Item {
   // neither loses the schedule nor triggers a fresh download.
   function maybeAutoUpdate() {
     if (root.filterUpdateHours <= 0) return
-    if (root.busy || !root.installed || root.lastUpdateTs <= 0) return
+    if (!root.installed || root.lastUpdateTs <= 0) return
     var nowMs = Date.now()
     if (nowMs - root._lastAutoAttemptMs < root.autoRetryMs) return
     var ageSec = (nowMs / 1000) - root.lastUpdateTs
-    if (ageSec < root.filterUpdateHours * 3600) return
-    root._lastAutoAttemptMs = nowMs
-    root.updateFilters()
+    if (ageSec < root.filterUpdateHours * root.secondsPerHour) return
+    if (run(["update"], "", "update")) root._lastAutoAttemptMs = nowMs
   }
 
   Process {
     id: statusProcess
     command: [root.helperPath, "status"]
+    onExited: function(code) {
+      if (code === 0) return
+      root.lastError = "The AdGuard helper could not run."
+      root.polled = true
+    }
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {

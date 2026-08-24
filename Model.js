@@ -3,7 +3,7 @@
 function defaultStatus() {
   return { ok: false, installed: false, running: false, httpsFiltering: false,
            blockedToday: 0, filters: [], exitNodeActive: false,
-           updateSummary: "", lastUpdateTs: 0, error: "" }
+           updateSummary: "", lastUpdateTs: 0, error: "", parsed: false }
 }
 
 function nonnegativeInteger(raw) {
@@ -33,7 +33,7 @@ function validStatusShape(doc) {
     && typeof doc.error === "string"
 }
 
-// helper sample: {"ok":true,"installed":true,"running":true,"httpsFiltering":true,"blockedToday":70,"filters":[{"id":2,"title":"AdGuard Base filter","enabled":true}],"exitNodeActive":false,"error":""}
+// helper sample: {"ok":true,"installed":true,"running":true,"httpsFiltering":true,"blockedToday":70,"filters":[{"id":2,"title":"AdGuard Base filter","enabled":true,"category":"Ad blocking","blocked":11}],"exitNodeActive":false,"updateSummary":"","lastUpdateTs":1787538763,"error":""}
 function parseStatus(raw) {
   var out = defaultStatus()
   if (!raw) { out.error = "Could not read the helper's output."; return out }
@@ -41,6 +41,7 @@ function parseStatus(raw) {
   try { doc = JSON.parse(String(raw)) } catch (e) { out.error = "Could not read the helper's output."; return out }
   if (!validStatusShape(doc)) { out.error = "Could not read the helper's output."; return out }
 
+  out.parsed = true
   out.ok = doc.ok === true
   out.installed = doc.installed === true
   out.running = doc.running === true
@@ -59,6 +60,8 @@ function parseStatus(raw) {
                 category: String(row.category), blocked: row.blocked })
   }
   out.filters = rows
+  if (rows.length !== doc.filters.length && out.error === "")
+    out.error = "Some filters could not be read."
   return out
 }
 
@@ -121,13 +124,15 @@ function categoryRows(filters) {
 
 // "updated 2h ago", in the coarsest unit that is still true.
 function updatedAgo(lastUpdateTs, nowSec) {
+  var secondsPerMinute = 60
+  var secondsPerHour = 3600
+  var secondsPerDay = 86400
   if (!lastUpdateTs || lastUpdateTs <= 0) return ""
   var age = Math.floor(nowSec - lastUpdateTs)
-  if (age < 0) return "updated just now"
-  if (age < 60) return "updated just now"
-  if (age < 3600) return "updated " + Math.floor(age / 60) + "m ago"
-  if (age < 86400) return "updated " + Math.floor(age / 3600) + "h ago"
-  return "updated " + Math.floor(age / 86400) + "d ago"
+  if (age < secondsPerMinute) return "updated just now"
+  if (age < secondsPerHour) return "updated " + Math.floor(age / secondsPerMinute) + "m ago"
+  if (age < secondsPerDay) return "updated " + Math.floor(age / secondsPerHour) + "h ago"
+  return "updated " + Math.floor(age / secondsPerDay) + "d ago"
 }
 
 
