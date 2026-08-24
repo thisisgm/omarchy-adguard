@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.thisisgm.adguard",
   "name": "AdGuard filtering",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "GM",
   "license": "MIT",
   "description": "System-wide ad and tracker filtering state and control for AdGuard on the Omarchy bar.",

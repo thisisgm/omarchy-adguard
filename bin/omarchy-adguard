@@ -13,6 +13,13 @@ readonly ERROR_MAX_CHARS=140
 readonly UPDATE_TIMEOUT_SEC=90
 # A wedged daemon must not hold a local read open, or the run emits no JSON at all.
 readonly READ_TIMEOUT_SEC=15
+# Every capture below is bounded, because the panel polls forever and the log only grows.
+readonly CLI_MAX_BYTES=262144
+readonly JSON_STRING_MAX_CHARS=200
+readonly SORT_BUFFER_SIZE=8M
+# AdGuard's whole catalogue is about sixty lists, so a longer tally means a malformed log.
+readonly FILTER_TALLY_MAX_ROWS=128
+readonly FILTER_MAX_ROWS=128
 
 installed=false
 running=false
@@ -38,7 +45,8 @@ strip_ansi() {
 
 # A title comes from a remote list, and one control byte would make the document unparseable.
 json_string() {
-  local s=${1//[[:cntrl:]]/}
+  local s=${1:0:JSON_STRING_MAX_CHARS}
+  s=${s//[[:cntrl:]]/}
   s=${s//\\/\\\\}
   s=${s//\"/\\\"}
   printf '"%s"' "$s"
@@ -50,9 +58,10 @@ note_error() {
 }
 
 # A failed call is reported, never folded into a zero the panel would present as fact.
+# head closes the pipe past the ceiling, so an absurd reply is reported rather than parsed.
 run_cli() {
   local raw rc
-  raw=$(timeout "$READ_TIMEOUT_SEC" adguard-cli "$@" 2>/dev/null)
+  raw=$(timeout "$READ_TIMEOUT_SEC" adguard-cli "$@" 2>/dev/null | head -c "$CLI_MAX_BYTES")
   rc=$?
   cli_out=$(printf '%s' "$raw" | strip_ansi)
   return "$rc"
@@ -88,7 +97,7 @@ read_https_filtering() {
 
 # sample: 23.08.2026 23:47:09 "slack" TLS - slackb.com - - any BLOCKED 1 ID=3 52.3.167.79:443 0b 2ms -- ||slackb.com^
 read_blocks() {
-  local today lines count id rc
+  local today tally count id rc rows=0
   filter_blocks="|"
   blocked_today=0
   # The log does not exist until the proxy first runs, which is a real zero.
@@ -98,20 +107,40 @@ read_blocks() {
     return 0
   fi
   today=$(date +%d.%m.%Y)
-  lines=$(grep "^${today}.*BLOCKED" "$ACCESS_LOG" 2>/dev/null)
+  # grep -c streams the log, so a busy day costs the same memory here as a quiet one.
+  blocked_today=$(timeout "$READ_TIMEOUT_SEC" grep -c "^${today}.*BLOCKED" "$ACCESS_LOG" 2>/dev/null)
   rc=$?
   # grep exits 1 for no matches, which is a real zero; anything above that is a read fault.
-  if [[ $rc -gt 1 ]]; then
+  if [[ $rc -gt 1 || ! $blocked_today =~ ^[0-9]+$ ]]; then
     note_error "Could not read the AdGuard access log."
+    blocked_today=0
     return 0
   fi
-  [[ -n $lines ]] || return 0
+  ((blocked_today > 0)) || return 0
 
-  blocked_today=$(printf '%s\n' "$lines" | grep -c .)
+  # The ids stream through sort with a fixed buffer, and the tally is one short row per filter.
+  tally=$(timeout "$READ_TIMEOUT_SEC" grep "^${today}.*BLOCKED" "$ACCESS_LOG" 2>/dev/null |
+    grep -o "ID=[0-9]*" | cut -d= -f2 | sort -S "$SORT_BUFFER_SIZE" | uniq -c |
+    head -n "$((FILTER_TALLY_MAX_ROWS + 1))")
+  rc=$?
+  # A partial tally would attribute today's blocks to the wrong filters, so it is not reported.
+  if [[ $rc -ne 0 ]]; then
+    note_error "Could not tally the AdGuard access log."
+    blocked_today=0
+    return 0
+  fi
   while read -r count id; do
-    [[ $id =~ ^[0-9]+$ ]] || continue
+    [[ $count =~ ^[0-9]+$ && $id =~ ^[0-9]+$ ]] || continue
+    rows=$((rows + 1))
+    # The extra row head allowed through is how an over-long tally announces itself.
+    if ((rows > FILTER_TALLY_MAX_ROWS)); then
+      note_error "The AdGuard access log names more filters than the panel will read."
+      blocked_today=0
+      filter_blocks="|"
+      return 0
+    fi
     filter_blocks+="${id}:${count}|"
-  done < <(printf '%s\n' "$lines" | grep -o "ID=[0-9]*" | cut -d= -f2 | sort | uniq -c)
+  done <<<"$tally"
 }
 
 blocks_for() {
@@ -125,7 +154,7 @@ blocks_for() {
 
 # sample: [x] |            2 | AdGuard Base filter                     2026-08-23 19:06:48
 read_filters() {
-  local line mark rest id title enabled category="" first=1 out="[" stamp epoch
+  local line mark rest id title enabled category="" first=1 out="[" stamp epoch rows=0
 
   if ! run_cli filters list; then
     note_error "adguard-cli could not list the filters."
@@ -170,6 +199,13 @@ read_filters() {
       [[ $epoch =~ ^[0-9]+$ ]] && ((epoch > last_update_ts)) && last_update_ts=$epoch
     fi
 
+    # A list longer than the whole catalogue is a malformed reply, not a filter set to draw.
+    if ((rows >= FILTER_MAX_ROWS)); then
+      note_error "adguard-cli listed more filters than the panel will read."
+      break
+    fi
+    rows=$((rows + 1))
+
     [[ $first -eq 1 ]] || out+=","
     first=0
     out+="{\"id\":${id},\"title\":$(json_string "$title"),\"enabled\":${enabled}"
@@ -180,13 +216,12 @@ read_filters() {
   filters_json=$out
 }
 
+# grep -q stops at the first match, so a long peer list is never held in a variable.
 read_exit_node() {
   command -v tailscale >/dev/null 2>&1 || return 0
-  local out
-  out=$(tailscale status 2>/dev/null)
-  case "$out" in
-  *"$EXIT_NODE_MARKER"*) exit_node_active=true ;;
-  esac
+  if timeout "$READ_TIMEOUT_SEC" tailscale status 2>/dev/null | grep -qF "$EXIT_NODE_MARKER"; then
+    exit_node_active=true
+  fi
 }
 
 read_status() {
@@ -221,7 +256,7 @@ summarise_update() {
 
 cmd_update() {
   local raw rc
-  raw=$(timeout "$UPDATE_TIMEOUT_SEC" adguard-cli check-update 2>/dev/null)
+  raw=$(timeout "$UPDATE_TIMEOUT_SEC" adguard-cli check-update 2>/dev/null | head -c "$CLI_MAX_BYTES")
   rc=$?
   if [[ $rc -ne 0 ]]; then
     note_error "Could not check for filter updates."
