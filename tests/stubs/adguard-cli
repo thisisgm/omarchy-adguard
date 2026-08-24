@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Stub AdGuard CLI. State lives in files under $STUB_STATE so an action genuinely changes
+# what the next read returns. STUB_REFUSE=1 makes every write a silent no-op, which is how
+# the real adguard-cli behaves when it refuses a request and still exits 0.
+set -uo pipefail
+
+state=${STUB_STATE:?STUB_STATE must be set}
+running_file="$state/running"
+https_file="$state/https"
+filters_file="$state/filters"
+
+writes_allowed() {
+  [[ ${STUB_REFUSE:-0} != "1" ]]
+}
+
+render_filters() {
+  local id title enabled mark stamp
+  printf '    |           ID | Title                                   Last update        \n'
+  printf 'Ad blocking\n'
+  while IFS='|' read -r id title enabled; do
+    [[ -n $id ]] || continue
+    if [[ $enabled == "true" ]]; then
+      mark="x"
+      stamp="2026-08-23 19:06:48"
+    else
+      mark=" "
+      stamp="Filter is disabled"
+    fi
+    printf '[%s] | %12s | %-39s %s \n' "$mark" "$id" "$title" "$stamp"
+  done <"$filters_file"
+  printf 'To view the full list of available filters, please run `adguard-cli filters list --all`\n'
+}
+
+set_filter() {
+  local target=$1 want=$2 id title enabled out=""
+  writes_allowed || return 0
+  while IFS='|' read -r id title enabled; do
+    [[ -n $id ]] || continue
+    [[ $id == "$target" ]] && enabled=$want
+    out+="${id}|${title}|${enabled}"$'\n'
+  done <"$filters_file"
+  printf '%s' "$out" >"$filters_file"
+}
+
+case "${1:-}" in
+status)
+  if [[ $(cat "$running_file") == "true" ]]; then
+    printf 'The AdGuard proxy server is running\n'
+  else
+    printf 'The AdGuard proxy server is not running\n'
+  fi
+  ;;
+start)
+  writes_allowed && printf 'true' >"$running_file"
+  printf 'The AdGuard proxy server has started successfully\n'
+  ;;
+stop)
+  writes_allowed && printf 'false' >"$running_file"
+  printf 'The AdGuard proxy server successfully stopped\n'
+  ;;
+config)
+  case "${2:-}" in
+  get) printf '%s = %s\n' "${3:-}" "$(cat "$https_file")" ;;
+  set) writes_allowed && printf '%s' "${4:-}" >"$https_file" ;;
+  esac
+  ;;
+filters)
+  case "${2:-}" in
+  list) render_filters ;;
+  enable) set_filter "${3:-}" true ;;
+  disable) set_filter "${3:-}" false ;;
+  esac
+  ;;
+check-update)
+  printf 'Checking filters updates...\nUp to date\n'
+  ;;
+esac
+
+# The real binary exits 0 even when it refuses the request, which is the whole point.
+exit 0

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Stub tailscale. STUB_EXIT_NODE=1 renders an active exit node; anything else renders the
+# idle form, which says "offers exit node" and must not be mistaken for an active one.
+set -uo pipefail
+[[ ${1:-} == "status" ]] || exit 0
+if [[ ${STUB_EXIT_NODE:-0} == "1" ]]; then
+  printf '100.95.48.95  unraid  gm@  linux  active; exit node; direct 100.64.0.2:41641\n'
+else
+  printf '100.95.48.95  unraid  gm@  linux  active; offers exit node; direct 100.64.0.2:41641\n'
+fi
+exit 0

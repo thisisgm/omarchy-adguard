@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.thisisgm.adguard",
+  "name": "AdGuard filtering",
+  "version": "0.1.0",
+  "author": "GM",
+  "license": "MIT",
+  "description": "System-wide ad and tracker filtering state and control for AdGuard on the Omarchy bar.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "AdGuard",
+    "category": "Network",
+    "defaultSection": "right",
+    "allowMultiple": false,
+    "defaults": {
+      "refreshIntervalSec": 30
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "defaultValue": 30,
+        "min": 5,
+        "max": 3600,
+        "step": 5
+      }
+    ]
+  }
+}

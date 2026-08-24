@@ -1,0 +1,252 @@
+#!/bin/bash
+# Reads and controls AdGuard for Linux for the omarchy-adguard bar widget.
+# Prints one JSON object on stdout and always exits 0, so the panel can always render.
+
+set -uo pipefail
+
+readonly ADGUARD_DATA_DIR="${HOME}/.local/share/adguard-cli"
+readonly ACCESS_LOG="${ADGUARD_DATA_DIR}/logs/access.log"
+readonly RUNNING_MARKER="The AdGuard proxy server is running"
+# tailscale prints "; exit node;" only while routing through one; idle peers say "; offers exit node;".
+readonly EXIT_NODE_MARKER="; exit node;"
+readonly ERROR_MAX_CHARS=140
+
+installed=false
+running=false
+https_filtering=false
+blocked_today=0
+exit_node_active=false
+error=""
+filters_json="[]"
+# Exact per-id lookup, "|2:true|3:false|", so a later filter's state cannot be mistaken for this one's.
+filter_states="|"
+
+# What the caller asked for, checked against reality after the write lands.
+want_kind=""
+want_value=""
+want_id=""
+
+strip_ansi() {
+  sed 's/\x1b\[[0-9;]*m//g'
+}
+
+json_string() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\t'/ }
+  s=${s//$'\n'/ }
+  s=${s//$'\r'/ }
+  printf '"%s"' "$s"
+}
+
+note_error() {
+  [[ -z $error ]] && error=${1:0:ERROR_MAX_CHARS}
+  return 0
+}
+
+read_installed() {
+  command -v adguard-cli >/dev/null 2>&1 && installed=true
+}
+
+read_running() {
+  local out
+  out=$(adguard-cli status 2>/dev/null | strip_ansi)
+  case "$out" in
+  *"$RUNNING_MARKER"*) running=true ;;
+  *) running=false ;;
+  esac
+}
+
+# sample: https_filtering.enabled = true
+read_https_filtering() {
+  local out value
+  out=$(adguard-cli config get https_filtering.enabled 2>/dev/null | strip_ansi | head -1)
+  value=${out#*=}
+  value=${value// /}
+  [[ $value == "true" ]] && https_filtering=true
+}
+
+# sample: 23.08.2026 19:56:36.991713 "curl" TLS - securepubads.g.doubleclick.net - - any BLOCKED 1 ID=2 ...
+read_blocked_today() {
+  local today count
+  [[ -r $ACCESS_LOG ]] || return 0
+  today=$(date +%d.%m.%Y)
+  # grep exits 1 when nothing matches, which is a legitimate zero rather than a failure.
+  count=$(grep -c "^${today}.*BLOCKED" "$ACCESS_LOG" 2>/dev/null)
+  [[ $count =~ ^[0-9]+$ ]] && blocked_today=$count
+}
+
+# sample: [x] |            2 | AdGuard Base filter                     2026-08-23 19:06:48
+# sample: [ ] |            4 | AdGuard Social Media filter             Filter is disabled
+read_filters() {
+  local raw line mark rest id title enabled first=1 out="["
+
+  filter_states="|"
+  raw=$(adguard-cli filters list 2>/dev/null | strip_ansi)
+  [[ -n $raw ]] || return 0
+
+  while IFS= read -r line; do
+    # Category names and the column header carry no checkbox, so they are skipped here.
+    case "$line" in
+    "[x] |"* | "[ ] |"*) ;;
+    *) continue ;;
+    esac
+
+    mark=${line:1:1}
+    if [[ $mark == "x" ]]; then enabled=true; else enabled=false; fi
+
+    rest=${line#*|}
+    id=${rest%%|*}
+    id=${id// /}
+    [[ $id =~ ^[0-9]+$ ]] || continue
+
+    title=${rest#*|}
+    # The last column is either a timestamp or a "Filter is ..." note; both follow a run of spaces.
+    title=$(printf '%s' "$title" | sed -E 's/[[:space:]]{2,}([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]+|Filter is .*)[[:space:]]*$//')
+    title=$(printf '%s' "$title" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+    [[ -n $title ]] || continue
+
+    [[ $first -eq 1 ]] || out+=","
+    first=0
+    out+="{\"id\":${id},\"title\":$(json_string "$title"),\"enabled\":${enabled}}"
+    filter_states+="${id}:${enabled}|"
+  done <<<"$raw"
+
+  out+="]"
+  filters_json=$out
+}
+
+read_exit_node() {
+  command -v tailscale >/dev/null 2>&1 || return 0
+  local out
+  out=$(tailscale status 2>/dev/null)
+  case "$out" in
+  *"$EXIT_NODE_MARKER"*) exit_node_active=true ;;
+  esac
+}
+
+read_status() {
+  read_running
+  read_https_filtering
+  read_blocked_today
+  read_filters
+  read_exit_node
+}
+
+filter_enabled() {
+  case "$filter_states" in
+  *"|${1}:true|"*) return 0 ;;
+  esac
+  return 1
+}
+
+# adguard-cli exits 0 even when it refuses the request, so intent is checked against
+# the state actually observed afterwards rather than against any exit code or message.
+verify_intent() {
+  case "$want_kind" in
+  protection)
+    if [[ $want_value == "on" && $running != true ]]; then
+      note_error "Could not start AdGuard filtering."
+    elif [[ $want_value == "off" && $running != false ]]; then
+      note_error "Could not stop AdGuard filtering."
+    fi
+    ;;
+  https)
+    if [[ $want_value == "on" && $https_filtering != true ]]; then
+      note_error "Could not turn HTTPS filtering on."
+    elif [[ $want_value == "off" && $https_filtering != false ]]; then
+      note_error "Could not turn HTTPS filtering off."
+    fi
+    ;;
+  filter)
+    if [[ $want_value == "enable" ]] && ! filter_enabled "$want_id"; then
+      note_error "Could not enable that filter."
+    elif [[ $want_value == "disable" ]] && filter_enabled "$want_id"; then
+      note_error "Could not disable that filter."
+    fi
+    ;;
+  esac
+}
+
+emit() {
+  printf '{"ok":%s,"installed":%s,"running":%s,"httpsFiltering":%s,"blockedToday":%s,"filters":%s,"exitNodeActive":%s,"error":%s}\n' \
+    "$([[ -z $error ]] && echo true || echo false)" \
+    "$installed" "$running" "$https_filtering" "$blocked_today" \
+    "$filters_json" "$exit_node_active" "$(json_string "$error")"
+}
+
+cmd_protection() {
+  want_kind="protection"
+  want_value=${1:-}
+  case "$want_value" in
+  on) adguard-cli start >/dev/null 2>&1 ;;
+  off) adguard-cli stop >/dev/null 2>&1 ;;
+  *)
+    want_kind=""
+    note_error "Unknown protection argument."
+    ;;
+  esac
+}
+
+cmd_https() {
+  want_kind="https"
+  want_value=${1:-}
+  case "$want_value" in
+  on) adguard-cli config set https_filtering.enabled true >/dev/null 2>&1 ;;
+  off) adguard-cli config set https_filtering.enabled false >/dev/null 2>&1 ;;
+  *)
+    want_kind=""
+    note_error "Unknown HTTPS filtering argument."
+    ;;
+  esac
+}
+
+cmd_filter() {
+  want_value=${1:-}
+  want_id=${2:-}
+  # The id crosses a trust boundary from the panel, so it is digits or nothing.
+  if [[ ! $want_id =~ ^[0-9]+$ ]]; then
+    note_error "Filter id must be a number."
+    return 0
+  fi
+  case "$want_value" in
+  enable)
+    want_kind="filter"
+    adguard-cli filters enable "$want_id" >/dev/null 2>&1
+    ;;
+  disable)
+    want_kind="filter"
+    adguard-cli filters disable "$want_id" >/dev/null 2>&1
+    ;;
+  *) note_error "Unknown filter action." ;;
+  esac
+}
+
+main() {
+  local command=${1:-status}
+  shift || true
+
+  read_installed
+  if [[ $installed != true ]]; then
+    note_error "AdGuard is not installed."
+    emit
+    return 0
+  fi
+
+  case "$command" in
+  status) ;;
+  protection) cmd_protection "${1:-}" ;;
+  https) cmd_https "${1:-}" ;;
+  filter) cmd_filter "${1:-}" "${2:-}" ;;
+  # adguard-cli merged "filters update" into check-update.
+  update) adguard-cli check-update >/dev/null 2>&1 ;;
+  *) note_error "Unknown command." ;;
+  esac
+
+  read_status
+  verify_intent
+  emit
+}
+
+main "$@"
