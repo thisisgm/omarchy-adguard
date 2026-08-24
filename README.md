@@ -1,31 +1,34 @@
 # AdGuard filtering
 
-System-wide ad and tracker filtering state and control for
-[AdGuard for Linux](https://adguard.com/en/adguard-linux/overview.html) on the Omarchy
+Ad and tracker filtering at a glance for
+[AdGuard for Linux](https://adguard.com/en/adguard-linux/overview.html), on the Omarchy
 bar.
 
 ![The panel](docs/panel.png)
 
-The shield sits in the bar and dims when filtering stops. Open it for the day's block
-count, the protection and HTTPS filtering switches, and a row per filter list.
+The shield sits in the bar and dims when filtering stops. Open it for today's numbers,
+and flip protection with the switch.
 
 ## Features
 
-- **Blocked today**, counted from AdGuard's own access log.
-- **Protection switch** on the panel header, which starts and stops the AdGuard proxy.
-  Right click the bar mark to toggle it without opening the panel.
-- **HTTPS filtering row**, the escape hatch when a certificate-pinned site refuses to
-  load through the filter.
-- **A row per filter list**, each one enabled or disabled in place. A checked row is on;
-  an unchecked, dimmed row is off.
-- **Update filters**, which runs AdGuard's own update check. AdGuard adds a
-  language-specific list of its own accord while `auto_enable_language_filters` is on,
-  so a new row can appear after an update; `adguard-cli config set
-  auto_enable_language_filters false` stops that.
+- **Today's blocks, broken down the way AdGuard breaks them down**: ads, trackers, social
+  widgets and threats. Every blocked request names the filter that matched it, so the
+  numbers are counted rather than estimated.
+- **Protection switch.** Starts and stops the AdGuard proxy. Right click the bar mark to
+  flip it without opening the panel.
+- **Filter and HTTPS filtering state**, and how long ago the lists last changed.
+- **Update filters**, which runs AdGuard's own update check and reports the outcome in
+  the button itself.
+- **Automatic filter updates** every six hours by default, driven by the lists' own
+  timestamps rather than a stored clock, so restarting the shell neither loses the
+  schedule nor forces a fresh download. Set the interval to 0 to turn it off.
 - **Tailscale exit node warning.** AdGuard's transparent proxy and a Tailscale exit node
   cannot both be on: the proxy opens its own outbound connection and the exit node's
   default route sends it back into the tunnel, so the machine loses internet. The panel
   says so when it sees both.
+
+The panel is a display with one switch. Filter lists are managed with `adguard-cli`,
+which is where that job belongs.
 
 ## Requirements
 
@@ -50,14 +53,11 @@ omarchy restart shell
 
 ## Keyboard
 
-The panel is keyboard-first. Accelerators work whenever the panel has focus.
-
 | Key | Action |
 |---|---|
-| `j` / `k` / arrows | move between rows |
-| `enter` / `space` | toggle the row under the cursor |
+| `j` / `k` / arrows | move between the switch and the button |
+| `enter` / `space` | activate the row under the cursor |
 | `t` | toggle protection |
-| `s` | toggle HTTPS filtering |
 | `u` | update filters |
 | `r` | refresh |
 | `esc` | close |
@@ -69,6 +69,7 @@ Left click opens the panel, right click toggles protection, middle click refresh
 | Setting | Default | Range |
 |---|---|---|
 | Refresh interval (seconds) | 30 | 5 to 3600 |
+| Auto-update filters every (hours) | 6 | 0 to 168, 0 disables |
 
 ## IPC
 
@@ -80,6 +81,26 @@ omarchy-shell adguard update
 omarchy-shell adguard refresh
 ```
 
+## Managing filter lists
+
+The panel reports the filter lists; it does not edit them. AdGuard's catalogue runs to
+about sixty lists, and adding or removing one is a considered change rather than a bar
+click:
+
+```bash
+adguard-cli filters list --all
+adguard-cli filters add 18
+adguard-cli filters remove 18
+adguard-cli filters disable 4
+```
+
+While `auto_enable_language_filters` is on, AdGuard adds a language-specific list of its
+own accord during an update, so a new row can appear in the totals. Turn it off with:
+
+```bash
+adguard-cli config set auto_enable_language_filters false
+```
+
 ## How it works
 
 The panel is strictly a display. Everything that touches AdGuard lives in
@@ -88,25 +109,15 @@ always render something:
 
 ```bash
 bin/omarchy-adguard status
-{"ok":true,"installed":true,"running":true,"httpsFiltering":true,"blockedToday":78, ...}
+{"ok":true,"installed":true,"running":true,"httpsFiltering":true,"blockedToday":180, ...}
 ```
 
 `adguard-cli` exits 0 even when it refuses a request, so the helper never reads an exit
-code. Every action re-reads the state afterwards and reports what it actually observed.
+code. Starting or stopping protection re-reads the state afterwards and reports what it
+actually observed.
 
 The helper never calls `adguard-cli license`, and no field it prints carries the licence
 key.
-
-## Adding a filter list
-
-The panel toggles the lists already added. Adding a new one from AdGuard's catalogue of
-roughly sixty stays a command-line job, so that the panel does not become a package
-manager:
-
-```bash
-adguard-cli filters list --all
-adguard-cli filters add 18
-```
 
 ## Uninstall
 

@@ -45,3 +45,42 @@ reset_state
 : >"$STUB_STATE/filters"
 out=$("$helper" status)
 assert_eq "no filters gives an empty array" "[]" "$(printf '%s' "$out" | field filters)"
+
+# Category and per-filter attribution, which the stat rows are built from.
+reset_state
+seed_access_log
+out=$("$helper" status)
+assert_eq "filter carries its category" '"Ad blocking"' \
+  "$(printf '%s' "$out" | python3 -c 'import sys,json;print(json.dumps(json.load(sys.stdin)["filters"][0]["category"]))')"
+assert_eq "a second category is read from its own header" '"Privacy"' \
+  "$(printf '%s' "$out" | python3 -c 'import sys,json;print(json.dumps([f for f in json.load(sys.stdin)["filters"] if f["id"]==3][0]["category"]))')"
+
+# The access log seeded two blocks today, both attributed to filter 2.
+assert_eq "blocks are attributed to the filter that matched" "2" \
+  "$(printf '%s' "$out" | python3 -c 'import sys,json;print([f for f in json.load(sys.stdin)["filters"] if f["id"]==2][0]["blocked"])')"
+assert_eq "a filter that blocked nothing reads zero" "0" \
+  "$(printf '%s' "$out" | python3 -c 'import sys,json;print([f for f in json.load(sys.stdin)["filters"] if f["id"]==3][0]["blocked"])')"
+assert_eq "per-filter blocks sum to the day's total" "2" "$(printf '%s' "$out" | field blockedToday)"
+
+# id 3 must not pick up id 13's tally, which a substring match would do.
+reset_state
+printf '13|Thirteen|true|Privacy\n' >>"$STUB_STATE/filters"
+today=$(date +%d.%m.%Y)
+printf '%s 10:00:00 "curl" TLS - a.com - - any BLOCKED 1 ID=13\n' "$today" \
+  >"$HOME/.local/share/adguard-cli/logs/access.log"
+out=$("$helper" status)
+assert_eq "filter 13's blocks do not leak into filter 3" "0" \
+  "$(printf '%s' "$out" | python3 -c 'import sys,json;print([f for f in json.load(sys.stdin)["filters"] if f["id"]==3][0]["blocked"])')"
+assert_eq "filter 13 keeps its own blocks" "1" \
+  "$(printf '%s' "$out" | python3 -c 'import sys,json;print([f for f in json.load(sys.stdin)["filters"] if f["id"]==13][0]["blocked"])')"
+
+# lastUpdateTs drives the automatic refresh, so it has to be a real epoch.
+reset_state
+out=$("$helper" status)
+assert_eq "lastUpdateTs is the stub's timestamp" "$(date -d '2026-08-23 19:06:48' +%s)" \
+  "$(printf '%s' "$out" | field lastUpdateTs)"
+
+# A disabled filter shows a note where the timestamp goes and must not be parsed as one.
+reset_state
+printf '2|AdGuard Base filter|false|Ad blocking\n' >"$STUB_STATE/filters"
+assert_eq "a disabled filter cannot set the update clock" "0" "$("$helper" status | field lastUpdateTs)"

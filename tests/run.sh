@@ -38,9 +38,9 @@ reset_state() {
   printf 'true' >"$STUB_STATE/running"
   printf 'true' >"$STUB_STATE/https"
   cat >"$STUB_STATE/filters" <<'FILTERS'
-2|AdGuard Base filter|true
-3|AdGuard Tracking Protection filter|true
-4|AdGuard Social Media filter|false
+2|AdGuard Base filter|true|Ad blocking
+3|AdGuard Tracking Protection filter|true|Privacy
+4|AdGuard Social Media filter|false|Social widgets
 FILTERS
   unset STUB_REFUSE STUB_EXIT_NODE
 }

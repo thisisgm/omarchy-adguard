@@ -14,11 +14,15 @@ writes_allowed() {
 }
 
 render_filters() {
-  local id title enabled mark stamp
+  local id title enabled category mark stamp shown=""
   printf '    |           ID | Title                                   Last update        \n'
-  printf 'Ad blocking\n'
-  while IFS='|' read -r id title enabled; do
+  while IFS='|' read -r id title enabled category; do
     [[ -n $id ]] || continue
+    [[ -n $category ]] || category="Ad blocking"
+    if [[ $category != "$shown" ]]; then
+      printf '%s\n' "$category"
+      shown=$category
+    fi
     if [[ $enabled == "true" ]]; then
       mark="x"
       stamp="2026-08-23 19:06:48"
@@ -72,7 +76,13 @@ filters)
   esac
   ;;
 check-update)
-  printf 'Checking filters updates...\nUp to date\n'
+  # STUB_UPDATED=1 makes check-update report a real refresh instead of a no-op.
+  printf 'Checking filters updates...\n'
+  if [[ ${STUB_UPDATED:-0} == "1" ]]; then
+    printf '2 filter(s) updated\n'
+  else
+    printf 'Up to date\n'
+  fi
   ;;
 esac
 

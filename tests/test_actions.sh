@@ -10,25 +10,6 @@ assert_eq "protection on reports ok" "true" "$(printf '%s' "$out" | field ok)"
 out=$("$helper" protection off)
 assert_eq "protection off stops the proxy" "false" "$(printf '%s' "$out" | field running)"
 
-reset_state
-out=$("$helper" https off)
-assert_eq "https off turns filtering off" "false" "$(printf '%s' "$out" | field httpsFiltering)"
-out=$("$helper" https on)
-assert_eq "https on turns filtering on" "true" "$(printf '%s' "$out" | field httpsFiltering)"
-
-reset_state
-out=$("$helper" filter enable 4)
-assert_eq "filter enable flips that filter" "True" \
-  "$(printf '%s' "$out" | python3 -c 'import sys,json;print([f for f in json.load(sys.stdin)["filters"] if f["id"]==4][0]["enabled"])')"
-assert_eq "filter enable leaves the others alone" "True" \
-  "$(printf '%s' "$out" | python3 -c 'import sys,json;print([f for f in json.load(sys.stdin)["filters"] if f["id"]==2][0]["enabled"])')"
-
-out=$("$helper" filter disable 2)
-assert_eq "filter disable flips only its own filter" "False" \
-  "$(printf '%s' "$out" | python3 -c 'import sys,json;print([f for f in json.load(sys.stdin)["filters"] if f["id"]==2][0]["enabled"])')"
-assert_eq "a later enabled filter is not mistaken for this one" "True" \
-  "$(printf '%s' "$out" | python3 -c 'import sys,json;print([f for f in json.load(sys.stdin)["filters"] if f["id"]==4][0]["enabled"])')"
-
 # The refusal cases. STUB_REFUSE makes every write a no-op while still exiting 0, which is
 # exactly the failure the helper must not report as success.
 reset_state
@@ -42,25 +23,7 @@ out=$(STUB_REFUSE=1 "$helper" protection off)
 assert_eq "refused stop is not reported ok" "false" "$(printf '%s' "$out" | field ok)"
 
 reset_state
-out=$(STUB_REFUSE=1 "$helper" https off)
-assert_eq "refused https change is caught" "false" "$(printf '%s' "$out" | field ok)"
-assert_eq "refused https change names the failure" '"Could not turn HTTPS filtering off."' "$(printf '%s' "$out" | field error)"
-
-reset_state
-out=$(STUB_REFUSE=1 "$helper" filter enable 4)
-assert_eq "refused filter enable is caught" "false" "$(printf '%s' "$out" | field ok)"
-assert_eq "refused filter enable names the failure" '"Could not enable that filter."' "$(printf '%s' "$out" | field error)"
-
-# Trust boundary: the id comes from the panel and reaches a command line.
-reset_state
-out=$("$helper" filter enable '4; touch /tmp/adguard-test-pwned')
-assert_eq "a non-numeric filter id is refused" "false" "$(printf '%s' "$out" | field ok)"
-assert_eq "a non-numeric filter id says why" '"Filter id must be a number."' "$(printf '%s' "$out" | field error)"
-assert_eq "the injected command never ran" "absent" "$([[ -e /tmp/adguard-test-pwned ]] && echo present || echo absent)"
-
-reset_state
 assert_eq "an unknown command is refused" '"Unknown command."' "$("$helper" frobnicate | field error)"
-assert_eq "an unknown filter action is refused" '"Unknown filter action."' "$("$helper" filter sideways 4 | field error)"
 assert_eq "a missing protection argument is refused" '"Unknown protection argument."' "$("$helper" protection | field error)"
 
 # Every subcommand must still emit the full object, because the panel re-renders from it.
@@ -84,3 +47,12 @@ assert_eq "missing adguard-cli says why" '"AdGuard is not installed."' "$(printf
 assert_eq "missing adguard-cli still exits 0" "0" "$(PATH="$bare_path" "$helper" status >/dev/null 2>&1; echo $?)"
 assert_eq "missing adguard-cli still emits valid JSON" "0" \
   "$(PATH="$bare_path" "$helper" status | python3 -m json.tool >/dev/null 2>&1 && echo 0 || echo 1)"
+
+# The Update control shows what actually happened, so the summary must distinguish the cases.
+reset_state
+assert_eq "an unchanged check-update says so" '"Everything is already up to date"' \
+  "$("$helper" update | field updateSummary)"
+reset_state
+assert_eq "a real refresh says so instead" '"Filters updated"' \
+  "$(STUB_UPDATED=1 "$helper" update | field updateSummary)"
+assert_eq "status alone never claims an update" '""' "$("$helper" status | field updateSummary)"

@@ -17,20 +17,18 @@ Panel {
 
   property int cursorIndex: 0
   property bool cursorActive: false
+  // Only ticks while the panel is open, so a closed panel costs nothing to keep "1h ago" true.
+  property double nowSec: 0
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
-  readonly property var filterRows: adguard.filters
-  readonly property int filterCount: filterRows ? filterRows.length : 0
-  // The hero switch owns protection, then the HTTPS row, the filter rows, then the button.
+  // The hero switch and the update button are the only two things to land on.
   readonly property int protectionIndex: 0
-  readonly property int httpsIndex: 1
-  readonly property int firstFilterIndex: 2
-  readonly property int updateIndex: firstFilterIndex + filterCount
-  readonly property int selectableCount: updateIndex + 1
+  readonly property int updateIndex: 1
+  readonly property int selectableCount: 2
 
   readonly property var adguardStatus: ({
     ok: adguard.ok, installed: adguard.installed, running: adguard.running,
@@ -39,12 +37,23 @@ Panel {
     error: adguard.lastError
   })
 
-  readonly property string heroMeta: adguard.installed
-    ? Model.formatCount(adguard.blockedToday) + " blocked today"
-    : Model.stateMeta(root.adguardStatus)
+  readonly property var statRows: Model.categoryRows(adguard.filters)
 
-  // The mark matches its neighbours at rest and only takes a colour when something is
-  // wrong, which is the OEM habit of saying nothing while it works.
+  // Nothing is known until the first poll answers, so the panel must not assert a state.
+  readonly property string heroTitle: adguard.polled ? Model.stateTitle(root.adguardStatus) : "AdGuard"
+  readonly property string heroMeta: !adguard.polled
+    ? ""
+    : (adguard.installed
+       ? Model.formatCount(adguard.blockedToday) + " blocked today"
+       : Model.stateMeta(root.adguardStatus))
+
+  // The update control speaks for itself, so its outcome never reaches the shared line.
+  readonly property string transientText: adguard.lastError
+
+  readonly property string updateLabel: adguard.updating
+    ? "Checking for updates"
+    : (adguard.updateSummary !== "" ? adguard.updateSummary : "Update filters")
+
   readonly property color markColor: adguard.exitNodeActive ? root.urgent : root.barForeground
   readonly property real markOpacity: adguard.effectiveRunning ? 1.0 : 0.35
 
@@ -54,19 +63,10 @@ Panel {
   }
 
   function moveCursor(dx, dy) {
-    if (root.selectableCount === 0) return
     root.cursorActive = true
     if (dy === 0) return
     root.cursorIndex = Math.max(0, Math.min(root.selectableCount - 1,
                                             root.cursorIndex + (dy > 0 ? 1 : -1)))
-    root.revealCursor()
-  }
-
-  // The filter list scrolls, so a cursor moved past its edge has to bring the list along.
-  function revealCursor() {
-    var row = root.cursorIndex - root.firstFilterIndex
-    if (row < 0 || row >= root.filterCount) return
-    filterList.positionViewAtIndex(row, ListView.Contain)
   }
 
   function focusRow(index) {
@@ -77,15 +77,21 @@ Panel {
   function activateCursor() {
     if (!root.cursorActive || adguard.busy) return
     if (root.cursorIndex === root.protectionIndex) adguard.toggleProtection()
-    else if (root.cursorIndex === root.httpsIndex) adguard.toggleHttpsFiltering()
     else if (root.cursorIndex === root.updateIndex) adguard.updateFilters()
-    else {
-      var row = root.filterRows[root.cursorIndex - root.firstFilterIndex]
-      if (row) adguard.toggleFilter(row.id, row.enabled)
-    }
   }
 
-  onOpenedChanged: root.resetPresentation()
+  onOpenedChanged: {
+    root.resetPresentation()
+    if (root.opened) root.nowSec = Date.now() / 1000
+  }
+
+  Timer {
+    interval: 30000
+    repeat: true
+    running: root.opened
+    triggeredOnStart: true
+    onTriggered: root.nowSec = Date.now() / 1000
+  }
 
   AdGuardService {
     id: adguard
@@ -158,7 +164,6 @@ Panel {
         if (key === "r") adguard.refresh()
         else if (adguard.busy) return
         else if (key === "t") adguard.toggleProtection()
-        else if (key === "s") adguard.toggleHttpsFiltering()
         else if (key === "u") adguard.updateFilters()
       }
 
@@ -179,7 +184,7 @@ Panel {
           PanelHero {
             id: hero
             width: parent.width
-            title: Model.stateTitle(root.adguardStatus)
+            title: root.heroTitle
             meta: root.heroMeta
             foreground: root.foreground
             fontFamily: root.fontFamily
@@ -195,7 +200,7 @@ Panel {
             trailingControl: Component {
               ToggleSwitch {
                 id: powerSwitch
-                visible: adguard.installed
+                visible: adguard.polled && adguard.installed
                 checked: adguard.effectiveRunning
                 busy: adguard.busy
                 hasCursor: header.ringVisible
@@ -214,12 +219,12 @@ Panel {
         }
 
         Text {
-          visible: adguard.actionStatus !== "" || adguard.lastError !== ""
+          visible: root.transientText !== ""
           width: parent.width
           textFormat: Text.PlainText
           wrapMode: Text.WordWrap
-          text: adguard.actionStatus !== "" ? adguard.actionStatus : adguard.lastError
-          color: adguard.lastError !== "" && adguard.actionStatus === "" ? root.urgent : root.dim
+          text: root.transientText
+          color: root.urgent
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall
         }
@@ -237,63 +242,46 @@ Panel {
           font.pixelSize: Style.font.bodySmall
         }
 
-        StateRow {
-          width: parent.width
-          rowIndex: root.httpsIndex
-          label: "HTTPS filtering"
-          on: adguard.httpsFiltering
-          onTriggered: adguard.toggleHttpsFiltering()
+        PanelSeparator { width: parent.width; foreground: root.foreground }
+
+        Repeater {
+          model: root.statRows
+          delegate: StatRow {
+            required property var modelData
+            width: column.width
+            label: modelData.label
+            value: Model.formatCount(modelData.blocked)
+          }
         }
 
         PanelSeparator { width: parent.width; foreground: root.foreground }
 
-        PanelSectionHeader {
+        StatRow {
           width: parent.width
-          text: "FILTERS"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
+          label: "Filters"
+          value: Model.filtersMeta(adguard.filters)
         }
 
-        Text {
-          visible: root.filterCount === 0
+        StatRow {
           width: parent.width
-          textFormat: Text.PlainText
-          wrapMode: Text.WordWrap
-          text: "No filter lists added."
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
+          label: "HTTPS filtering"
+          value: adguard.httpsFiltering ? "on" : "off"
         }
 
-        // A ListView rather than a Repeater because the list length is the user's to choose:
-        // AdGuard offers about sixty lists, and a tall enough Column would outgrow the screen.
-        ListView {
-          id: filterList
+        StatRow {
+          visible: adguard.lastUpdateTs > 0
           width: parent.width
-          height: Math.min(contentHeight, Style.space(280))
-          visible: root.filterCount > 0
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
-          interactive: contentHeight > height
-          model: root.filterRows
-
-          delegate: StateRow {
-            required property var modelData
-            required property int index
-
-            width: filterList.width
-            rowIndex: root.firstFilterIndex + index
-            label: modelData.title
-            on: modelData.enabled
-            onTriggered: adguard.toggleFilter(modelData.id, modelData.enabled)
-          }
+          label: "Last updated"
+          value: Model.updatedAgo(adguard.lastUpdateTs, root.nowSec).replace("updated ", "")
         }
 
         PanelSeparator { width: parent.width; foreground: root.foreground }
 
         Button {
           width: parent.width
-          text: "Update filters"
+          // The control reports its own progress and outcome, so neither needs a line of
+          // its own above the numbers.
+          text: root.updateLabel
           bordered: true
           enabled: !adguard.busy
           selected: root.cursorActive && root.cursorIndex === root.updateIndex
@@ -308,59 +296,40 @@ Panel {
     }
   }
 
-  // One row shape for every on/off line, so a filter list and the HTTPS mode read alike.
-  // State is a leading check and a dimmed label, the way the OEM audio rows mark a device,
-  // rather than a switch on every row.
-  component StateRow: CursorSurface {
-    id: stateRow
-    required property int rowIndex
+  // Every line in the body is a label on the left and its value on the right, the rhythm
+  // AdGuard's own desktop panel uses.
+  component StatRow: Item {
+    id: statRow
     required property string label
-    required property bool on
-    signal triggered()
+    required property string value
 
-    hasCursor: root.cursorActive && root.cursorIndex === rowIndex
-    foreground: root.foreground
-    implicitHeight: rowContent.implicitHeight + Style.spacing.rowPaddingX
+    implicitHeight: visible ? statLabel.implicitHeight + Style.spacing.controlPaddingY : 0
 
-    Row {
-      id: rowContent
+    Text {
+      id: statLabel
       anchors.left: parent.left
-      anchors.right: parent.right
+      anchors.right: statValue.left
       anchors.verticalCenter: parent.verticalCenter
       anchors.leftMargin: Style.spacing.rowPaddingX
-      anchors.rightMargin: Style.spacing.rowPaddingX
-      spacing: Style.spacing.controlGap
-
-      Text {
-        width: Style.space(16)
-        horizontalAlignment: Text.AlignHCenter
-        anchors.verticalCenter: parent.verticalCenter
-        textFormat: Text.PlainText
-        text: stateRow.on ? "󰄲" : ""
-        color: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-      }
-
-      Text {
-        width: parent.width - Style.space(16) - Style.spacing.controlGap
-        anchors.verticalCenter: parent.verticalCenter
-        textFormat: Text.PlainText
-        elide: Text.ElideRight
-        text: stateRow.label
-        color: stateRow.on ? root.foreground : root.dim
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.body
-      }
+      anchors.rightMargin: Style.spacing.controlGap
+      textFormat: Text.PlainText
+      elide: Text.ElideRight
+      text: statRow.label
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
     }
 
-    MouseArea {
-      anchors.fill: parent
-      hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
-      enabled: !adguard.busy
-      onContainsMouseChanged: if (containsMouse) root.focusRow(stateRow.rowIndex)
-      onClicked: stateRow.triggered()
+    Text {
+      id: statValue
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.rightMargin: Style.spacing.rowPaddingX
+      textFormat: Text.PlainText
+      text: statRow.value
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
     }
   }
 }

@@ -6,7 +6,9 @@
   "author": "GM",
   "license": "MIT",
   "description": "System-wide ad and tracker filtering state and control for AdGuard on the Omarchy bar.",
-  "kinds": ["bar-widget"],
+  "kinds": [
+    "bar-widget"
+  ],
   "entryPoints": {
     "barWidget": "Panel.qml"
   },
@@ -16,7 +18,8 @@
     "defaultSection": "right",
     "allowMultiple": false,
     "defaults": {
-      "refreshIntervalSec": 30
+      "refreshIntervalSec": 30,
+      "filterUpdateHours": 6
     },
     "schema": [
       {
@@ -27,6 +30,15 @@
         "min": 5,
         "max": 3600,
         "step": 5
+      },
+      {
+        "key": "filterUpdateHours",
+        "type": "integer",
+        "label": "Auto-update filters every (hours, 0 = never)",
+        "defaultValue": 6,
+        "min": 0,
+        "max": 168,
+        "step": 1
       }
     ]
   }

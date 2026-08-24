@@ -2,7 +2,8 @@
 
 function defaultStatus() {
   return { ok: false, installed: false, running: false, httpsFiltering: false,
-           blockedToday: 0, filters: [], exitNodeActive: false, error: "" }
+           blockedToday: 0, filters: [], exitNodeActive: false,
+           updateSummary: "", lastUpdateTs: 0, error: "" }
 }
 
 function nonnegativeInteger(raw) {
@@ -14,6 +15,8 @@ function validFilter(row) {
     && nonnegativeInteger(row.id)
     && typeof row.title === "string"
     && typeof row.enabled === "boolean"
+    && typeof row.category === "string"
+    && nonnegativeInteger(row.blocked)
 }
 
 function validStatusShape(doc) {
@@ -25,6 +28,8 @@ function validStatusShape(doc) {
     && nonnegativeInteger(doc.blockedToday)
     && Array.isArray(doc.filters)
     && typeof doc.exitNodeActive === "boolean"
+    && typeof doc.updateSummary === "string"
+    && nonnegativeInteger(doc.lastUpdateTs)
     && typeof doc.error === "string"
 }
 
@@ -42,13 +47,16 @@ function parseStatus(raw) {
   out.httpsFiltering = doc.httpsFiltering === true
   out.blockedToday = doc.blockedToday
   out.exitNodeActive = doc.exitNodeActive === true
+  out.updateSummary = String(doc.updateSummary || "")
+  out.lastUpdateTs = doc.lastUpdateTs
   out.error = String(doc.error || "")
 
   var rows = []
   for (var i = 0; i < doc.filters.length; i++) {
     var row = doc.filters[i]
     if (!validFilter(row)) continue
-    rows.push({ id: row.id, title: String(row.title), enabled: row.enabled === true })
+    rows.push({ id: row.id, title: String(row.title), enabled: row.enabled === true,
+                category: String(row.category), blocked: row.blocked })
   }
   out.filters = rows
   return out
@@ -77,10 +85,51 @@ function enabledCount(filters) {
 }
 
 function stateTitle(s) {
-  if (!s.installed) return "Not installed"
-  if (s.running) return "Protecting"
-  return "Not filtering"
+  if (!s.installed) return "AdGuard is not installed"
+  if (s.running) return "Protection is on"
+  return "Protection is off"
 }
+
+// AdGuard's own category names, said the way its desktop app says them. An unmapped
+// category still gets a row, so a filter list this map has never heard of is never
+// silently dropped from the totals.
+function categoryLabel(category) {
+  if (category === "Ad blocking") return "Ads blocked"
+  if (category === "Privacy") return "Trackers blocked"
+  if (category === "Security") return "Threats blocked"
+  if (category === "Social widgets") return "Social widgets blocked"
+  if (category === "" || category === undefined) return "Other blocked"
+  return String(category) + " blocked"
+}
+
+// One row per category that has a filter, in the order AdGuard lists them.
+function categoryRows(filters) {
+  if (!Array.isArray(filters)) return []
+  var order = []
+  var totals = {}
+  for (var i = 0; i < filters.length; i++) {
+    var key = String(filters[i].category || "")
+    if (totals[key] === undefined) { totals[key] = 0; order.push(key) }
+    totals[key] += filters[i].blocked
+  }
+  var rows = []
+  for (var j = 0; j < order.length; j++) {
+    rows.push({ key: order[j], label: categoryLabel(order[j]), blocked: totals[order[j]] })
+  }
+  return rows
+}
+
+// "updated 2h ago", in the coarsest unit that is still true.
+function updatedAgo(lastUpdateTs, nowSec) {
+  if (!lastUpdateTs || lastUpdateTs <= 0) return ""
+  var age = Math.floor(nowSec - lastUpdateTs)
+  if (age < 0) return "updated just now"
+  if (age < 60) return "updated just now"
+  if (age < 3600) return "updated " + Math.floor(age / 60) + "m ago"
+  if (age < 86400) return "updated " + Math.floor(age / 3600) + "h ago"
+  return "updated " + Math.floor(age / 86400) + "d ago"
+}
+
 
 function stateMeta(s) {
   if (!s.installed) return "adguard-cli is not on this machine"
@@ -89,10 +138,11 @@ function stateMeta(s) {
   return "System-wide, HTTPS filtering off"
 }
 
+// Reads as the value on an informational row, so it says the whole state in one phrase.
 function filtersMeta(filters) {
   var on = enabledCount(filters)
   var total = Array.isArray(filters) ? filters.length : 0
   if (total === 0) return "none added"
-  if (on === total) return on + " on"
+  if (on === total) return "all " + total + " on"
   return on + " of " + total + " on"
 }

@@ -16,6 +16,12 @@ Item {
   property bool exitNodeActive: false
   property string lastError: ""
   property string actionStatus: ""
+  property string updateSummary: ""
+  property int lastUpdateTs: 0
+  // Which action is in flight, so the Update control can show its own progress rather
+  // than every control going busy at once.
+  property string actionKind: ""
+  readonly property bool updating: actionKind === "update" && actionProcess.running
   // Nothing is known before the first poll answers, so the widget must not self-hide on the
   // starting value of `installed` and flicker out of the bar on every shell start.
   property bool polled: false
@@ -38,6 +44,9 @@ Item {
   }
 
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 30, 5, 3600)
+  // 0 turns the automatic refresh off; filter lists publish a few times a day, so six
+  // hours keeps them current without making the box chatty.
+  readonly property int filterUpdateHours: intSetting("filterUpdateHours", 6, 0, 168)
 
   readonly property int millisecondsPerSecond: 1000
   readonly property int actionStatusDurationMs: 2200
@@ -48,6 +57,10 @@ Item {
 
   property int _rampTicks: 0
   property int _settleRemaining: 0
+  // A refresh that fails leaves the timestamp where it was, so without this the next poll
+  // would try again immediately and keep trying every thirty seconds.
+  readonly property int autoRetryMs: 1800000
+  property double _lastAutoAttemptMs: 0
 
   function apply(raw) {
     var s = Model.parseStatus(raw)
@@ -59,6 +72,8 @@ Item {
     root.filters = s.filters
     root.exitNodeActive = s.exitNodeActive
     root.lastError = s.error
+    if (s.updateSummary !== "") root.updateSummary = s.updateSummary
+    root.lastUpdateTs = s.lastUpdateTs
     root.polled = true
     // Reality has spoken, so stop overriding it.
     root._desiredRunning = -1
@@ -69,9 +84,11 @@ Item {
     statusProcess.running = true
   }
 
-  function run(args, note) {
+  function run(args, note, kind) {
     if (statusProcess.running || actionProcess.running) return
     root.actionStatus = note
+    root.actionKind = kind || ""
+    root.updateSummary = ""
     actionProcess.command = [root.helperPath].concat(args)
     actionProcess.running = true
   }
@@ -79,20 +96,24 @@ Item {
   function toggleProtection() {
     var turningOn = !root.effectiveRunning
     root._desiredRunning = turningOn ? 1 : 0
-    run(["protection", turningOn ? "on" : "off"], turningOn ? "Starting" : "Stopping")
-  }
-
-  function toggleHttpsFiltering() {
-    run(["https", root.httpsFiltering ? "off" : "on"],
-        root.httpsFiltering ? "Turning HTTPS filtering off" : "Turning HTTPS filtering on")
-  }
-
-  function toggleFilter(id, enabled) {
-    run(["filter", enabled ? "disable" : "enable", String(id)], "Updating filters")
+    run(["protection", turningOn ? "on" : "off"], turningOn ? "Starting" : "Stopping", "protection")
   }
 
   function updateFilters() {
-    run(["update"], "Checking for updates")
+    run(["update"], "", "update")
+  }
+
+  // Driven off the filters' own timestamps rather than a stored clock, so a shell restart
+  // neither loses the schedule nor triggers a fresh download.
+  function maybeAutoUpdate() {
+    if (root.filterUpdateHours <= 0) return
+    if (root.busy || !root.installed || root.lastUpdateTs <= 0) return
+    var nowMs = Date.now()
+    if (nowMs - root._lastAutoAttemptMs < root.autoRetryMs) return
+    var ageSec = (nowMs / 1000) - root.lastUpdateTs
+    if (ageSec < root.filterUpdateHours * 3600) return
+    root._lastAutoAttemptMs = nowMs
+    root.updateFilters()
   }
 
   Process {
@@ -100,7 +121,10 @@ Item {
     command: [root.helperPath, "status"]
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.apply(text)
+      onStreamFinished: {
+        root.apply(text)
+        root.maybeAutoUpdate()
+      }
     }
   }
 
@@ -110,6 +134,7 @@ Item {
       waitForEnd: true
       onStreamFinished: {
         root.apply(text)
+        root.actionKind = ""
         if (root.lastError !== "") root.actionStatus = ""
         actionStatusTimer.restart()
         // A start or stop settles over a few seconds, so re-read until it stops moving.
@@ -159,6 +184,9 @@ Item {
   Timer {
     id: actionStatusTimer
     interval: root.actionStatusDurationMs
-    onTriggered: root.actionStatus = ""
+    onTriggered: {
+      root.actionStatus = ""
+      root.updateSummary = ""
+    }
   }
 }
