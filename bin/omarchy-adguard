@@ -11,6 +11,8 @@ readonly EXIT_NODE_MARKER="; exit node;"
 readonly ERROR_MAX_CHARS=140
 # check-update is network-bound, and a stall would leave the panel's spinner up for good.
 readonly UPDATE_TIMEOUT_SEC=90
+# A wedged daemon must not hold a local read open, or the run emits no JSON at all.
+readonly READ_TIMEOUT_SEC=15
 
 installed=false
 running=false
@@ -50,7 +52,7 @@ note_error() {
 # A failed call is reported, never folded into a zero the panel would present as fact.
 run_cli() {
   local raw rc
-  raw=$(adguard-cli "$@" 2>/dev/null)
+  raw=$(timeout "$READ_TIMEOUT_SEC" adguard-cli "$@" 2>/dev/null)
   rc=$?
   cli_out=$(printf '%s' "$raw" | strip_ansi)
   return "$rc"
@@ -86,13 +88,19 @@ read_https_filtering() {
 
 # sample: 23.08.2026 23:47:09 "slack" TLS - slackb.com - - any BLOCKED 1 ID=3 52.3.167.79:443 0b 2ms -- ||slackb.com^
 read_blocks() {
-  local today lines count id
+  local today lines count id rc
   filter_blocks="|"
   blocked_today=0
   # The log does not exist until the proxy first runs, which is a real zero rather than a fault.
   [[ -r $ACCESS_LOG ]] || return 0
   today=$(date +%d.%m.%Y)
   lines=$(grep "^${today}.*BLOCKED" "$ACCESS_LOG" 2>/dev/null)
+  rc=$?
+  # grep exits 1 for no matches, which is a real zero; anything above that is a read fault.
+  if [[ $rc -gt 1 ]]; then
+    note_error "Could not read the AdGuard access log."
+    return 0
+  fi
   [[ -n $lines ]] || return 0
 
   blocked_today=$(printf '%s\n' "$lines" | grep -c .)
@@ -187,12 +195,24 @@ read_status() {
 
 # sample: Checking filters updates...\nUp to date\nChecking DNS filters updates...\n1 DNS filter(s) updated
 summarise_update() {
-  local changed
-  changed=$(printf '%s\n' "$1" | grep -cE '(^|[^0-9])[1-9][0-9]* [^ ]+ ?[^ ]*updated|^Updated$')
-  if [[ $changed -eq 0 ]]; then
+  local line refreshed=0 unchanged=0
+  while IFS= read -r line; do
+    # Only a non-zero count means a list moved; SafebrowsingV2 and CRLite report a bare
+    # "Updated" on every single run, so counting that would make the summary always positive.
+    if [[ $line =~ ^[1-9][0-9]*[[:space:]] ]]; then
+      refreshed=1
+    elif [[ $line == "Up to date" ]]; then
+      unchanged=1
+    fi
+  done <<<"$1"
+
+  if [[ $refreshed -eq 1 ]]; then
+    printf 'Filters updated'
+  elif [[ $unchanged -eq 1 ]]; then
     printf 'Everything is already up to date'
   else
-    printf 'Filters updated'
+    # Output this version does not recognise, so it reports the run rather than its outcome.
+    printf 'Filters checked'
   fi
 }
 

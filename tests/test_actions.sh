@@ -52,9 +52,15 @@ assert_eq "missing adguard-cli still emits valid JSON" "0" \
 reset_state
 assert_eq "an unchanged check-update says so" '"Everything is already up to date"' \
   "$("$helper" update | field updateSummary)"
+# The success line adguard-cli actually prints is "1 DNS filter(s) updated", four tokens.
+# A regex allowing only one token between the count and "updated" passed the three-token
+# form and silently inverted this one, so the shape is pinned here.
 reset_state
-assert_eq "a real refresh says so instead" '"Filters updated"' \
+assert_eq "a four-token refresh line is recognised" '"Filters updated"' \
   "$(STUB_UPDATED=1 "$helper" update | field updateSummary)"
+reset_state
+assert_eq "a zero count is not a refresh" '"Everything is already up to date"' \
+  "$(STUB_UPDATED_ZERO=1 "$helper" update | field updateSummary)"
 assert_eq "status alone never claims an update" '""' "$("$helper" status | field updateSummary)"
 
 # A failing adguard-cli must be reported, never rendered as a healthy zero. Each of these
@@ -74,10 +80,20 @@ assert_eq "a failed update says so" '"Could not check for filter updates."' "$(p
 assert_eq "a failed update claims no summary" '""' "$(printf '%s' "$out" | field updateSummary)"
 
 # A control byte in a remote-sourced title used to make the whole document unparseable.
+# The first assertion proves the stub really injected, so a stub that stopped injecting
+# turns this case red instead of leaving the other two passing on the default state.
 reset_state
+assert_eq "the stub really injected the hostile title" "3" \
+  "$(STUB_CTRL=1 "$helper" status | python3 -c 'import sys,json
+print(sum(1 for f in json.load(sys.stdin)["filters"] if f["title"].startswith("Bad")))')"
 assert_eq "a control byte in a title still parses" "0" \
   "$(STUB_CTRL=1 "$helper" status | python3 -m json.tool >/dev/null 2>&1 && echo 0 || echo 1)"
 assert_eq "the control byte is stripped from the title" "0" \
   "$(STUB_CTRL=1 "$helper" status | python3 -c 'import sys,json
 bad = [f for f in json.load(sys.stdin)["filters"] if any(ord(c) < 32 for c in f["title"])]
 print(len(bad))')"
+# The same three titles must be clean when nothing is injected, so the strip is not a no-op.
+reset_state
+assert_eq "no hostile prefix appears without the stub flag" "0" \
+  "$("$helper" status | python3 -c 'import sys,json
+print(sum(1 for f in json.load(sys.stdin)["filters"] if f["title"].startswith("Bad")))')"

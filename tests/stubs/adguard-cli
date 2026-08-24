@@ -87,7 +87,9 @@ check-update)
   # STUB_UPDATED=1 makes check-update report a real refresh instead of a no-op.
   printf 'Checking filters updates...\n'
   if [[ ${STUB_UPDATED:-0} == "1" ]]; then
-    printf '2 filter(s) updated\n'
+    printf 'Up to date\nChecking DNS filters updates...\n1 DNS filter(s) updated\n'
+  elif [[ ${STUB_UPDATED_ZERO:-0} == "1" ]]; then
+    printf 'Up to date\n0 filter(s) updated\nChecking SafebrowsingV2 updates...\nUpdated\n'
   else
     printf 'Up to date\n'
   fi
