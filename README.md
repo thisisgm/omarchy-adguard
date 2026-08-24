@@ -12,11 +12,12 @@ count, the protection and HTTPS filtering switches, and a row per filter list.
 ## Features
 
 - **Blocked today**, counted from AdGuard's own access log.
-- **Protection switch.** Starts and stops the AdGuard proxy. Right click the bar mark to
-  toggle it without opening the panel.
-- **HTTPS filtering switch**, the escape hatch when a certificate-pinned site refuses to
+- **Protection switch** on the panel header, which starts and stops the AdGuard proxy.
+  Right click the bar mark to toggle it without opening the panel.
+- **HTTPS filtering row**, the escape hatch when a certificate-pinned site refuses to
   load through the filter.
-- **A row per filter list**, each one enabled or disabled in place.
+- **A row per filter list**, each one enabled or disabled in place. A checked row is on;
+  an unchecked, dimmed row is off.
 - **Update filters**, which runs AdGuard's own update check. AdGuard adds a
   language-specific list of its own accord while `auto_enable_language_filters` is on,
   so a new row can appear after an update; `adguard-cli config set

@@ -25,7 +25,7 @@ Panel {
 
   readonly property var filterRows: adguard.filters
   readonly property int filterCount: filterRows ? filterRows.length : 0
-  // protection, HTTPS filtering, one row per filter, then the update button.
+  // The hero switch owns protection, then the HTTPS row, the filter rows, then the button.
   readonly property int protectionIndex: 0
   readonly property int httpsIndex: 1
   readonly property int firstFilterIndex: 2
@@ -39,8 +39,12 @@ Panel {
     error: adguard.lastError
   })
 
-  // The mark matches its neighbours at rest and only takes a colour when something is wrong,
-  // which is the OEM habit of saying nothing while it works.
+  readonly property string heroMeta: adguard.installed
+    ? Model.formatCount(adguard.blockedToday) + " blocked today"
+    : Model.stateMeta(root.adguardStatus)
+
+  // The mark matches its neighbours at rest and only takes a colour when something is
+  // wrong, which is the OEM habit of saying nothing while it works.
   readonly property color markColor: adguard.exitNodeActive ? root.urgent : root.barForeground
   readonly property real markOpacity: adguard.effectiveRunning ? 1.0 : 0.35
 
@@ -63,6 +67,11 @@ Panel {
     var row = root.cursorIndex - root.firstFilterIndex
     if (row < 0 || row >= root.filterCount) return
     filterList.positionViewAtIndex(row, ListView.Contain)
+  }
+
+  function focusRow(index) {
+    root.cursorActive = true
+    root.cursorIndex = index
   }
 
   function activateCursor() {
@@ -158,18 +167,48 @@ Panel {
         width: parent.width
         spacing: Style.spacing.md
 
-        PanelHero {
+        Item {
+          id: header
           width: parent.width
-          title: adguard.installed ? Model.formatCount(adguard.blockedToday) : "AdGuard"
-          meta: adguard.installed ? "blocked today" : Model.stateMeta(root.adguardStatus)
-          detail: adguard.installed ? Model.stateTitle(root.adguardStatus) : ""
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          iconOpacity: adguard.effectiveRunning ? 1.0 : 0.5
-          iconComponent: Component {
-            AdGuardIcon {
-              iconSize: Style.font.display
-              color: root.foreground
+          implicitHeight: hero.implicitHeight
+          // Exposed for the hero's trailingControl, whose `root` resolves to PanelHero
+          // rather than this Panel.
+          readonly property bool ringVisible: root.cursorActive && root.cursorIndex === root.protectionIndex
+          function focusHero() { root.focusRow(root.protectionIndex) }
+
+          PanelHero {
+            id: hero
+            width: parent.width
+            title: Model.stateTitle(root.adguardStatus)
+            meta: root.heroMeta
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            iconOpacity: adguard.effectiveRunning ? 1.0 : 0.5
+            // Status only, the switch owns toggling for mouse and keyboard alike.
+            iconComponent: Component {
+              AdGuardIcon {
+                iconSize: Style.font.display
+                color: root.foreground
+              }
+            }
+
+            trailingControl: Component {
+              ToggleSwitch {
+                id: powerSwitch
+                visible: adguard.installed
+                checked: adguard.effectiveRunning
+                busy: adguard.busy
+                hasCursor: header.ringVisible
+                foreground: hero.foreground
+                onHovered: function(on) { if (on) header.focusHero() }
+                onToggled: adguard.toggleProtection()
+
+                PanelToolTip {
+                  visible: powerSwitch.containsMouse
+                  text: adguard.effectiveRunning ? "Stop filtering" : "Start filtering"
+                  fontFamily: hero.fontFamily
+                }
+              }
             }
           }
         }
@@ -185,70 +224,25 @@ Panel {
           font.pixelSize: Style.font.bodySmall
         }
 
-        PanelSeparator { width: parent.width; foreground: root.foreground }
-
-        Toggle {
-          width: parent.width
-          label: "Protection"
-          description: Model.stateMeta(root.adguardStatus)
-          titleSize: Style.font.body
-          checked: adguard.effectiveRunning
-          hasCursor: root.cursorActive && root.cursorIndex === root.protectionIndex
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: if (!adguard.busy) adguard.toggleProtection()
-          onHovered: function(isHovered) {
-            if (!isHovered) return
-            root.cursorActive = true
-            root.cursorIndex = root.protectionIndex
-          }
-        }
-
-        Toggle {
-          width: parent.width
-          label: "HTTPS filtering"
-          description: "Filters inside encrypted browser traffic"
-          titleSize: Style.font.body
-          checked: adguard.httpsFiltering
-          hasCursor: root.cursorActive && root.cursorIndex === root.httpsIndex
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: if (!adguard.busy) adguard.toggleHttpsFiltering()
-          onHovered: function(isHovered) {
-            if (!isHovered) return
-            root.cursorActive = true
-            root.cursorIndex = root.httpsIndex
-          }
-        }
-
         // Both features work alone and cannot work together: AdGuard's proxy opens its own
-        // outbound connection and the exit node's default route sends it back into the tunnel.
-        Column {
+        // outbound connection and the exit node default route sends it back into the tunnel.
+        Text {
           visible: adguard.exitNodeActive
           width: parent.width
-          spacing: Style.spacing.hairline
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          text: "Tailscale exit node is on, so nothing reaches the internet while AdGuard filters."
+          color: root.urgent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+        }
 
-          PanelSeparator { width: parent.width; foreground: root.foreground }
-
-          Text {
-            width: parent.width
-            textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
-            text: "Tailscale exit node is active"
-            color: root.urgent
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.body
-          }
-
-          Text {
-            width: parent.width
-            textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
-            text: "Internet stays blocked while both are on. Stop AdGuard or turn the exit node off."
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
+        StateRow {
+          width: parent.width
+          rowIndex: root.httpsIndex
+          label: "HTTPS filtering"
+          on: adguard.httpsFiltering
+          onTriggered: adguard.toggleHttpsFiltering()
         }
 
         PanelSeparator { width: parent.width; foreground: root.foreground }
@@ -265,7 +259,7 @@ Panel {
           width: parent.width
           textFormat: Text.PlainText
           wrapMode: Text.WordWrap
-          text: "No filter lists added. Add one with adguard-cli filters add <id>."
+          text: "No filter lists added."
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
@@ -276,32 +270,22 @@ Panel {
         ListView {
           id: filterList
           width: parent.width
-          height: Math.min(contentHeight, Style.space(400))
+          height: Math.min(contentHeight, Style.space(280))
           visible: root.filterCount > 0
           clip: true
           boundsBehavior: Flickable.StopAtBounds
           interactive: contentHeight > height
-          spacing: Style.spacing.md
           model: root.filterRows
 
-          delegate: Toggle {
+          delegate: StateRow {
             required property var modelData
             required property int index
-            readonly property int rowIndex: root.firstFilterIndex + index
 
             width: filterList.width
+            rowIndex: root.firstFilterIndex + index
             label: modelData.title
-            titleSize: Style.font.body
-            checked: modelData.enabled
-            hasCursor: root.cursorActive && root.cursorIndex === rowIndex
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            onClicked: if (!adguard.busy) adguard.toggleFilter(modelData.id, modelData.enabled)
-            onHovered: function(isHovered) {
-              if (!isHovered) return
-              root.cursorActive = true
-              root.cursorIndex = rowIndex
-            }
+            on: modelData.enabled
+            onTriggered: adguard.toggleFilter(modelData.id, modelData.enabled)
           }
         }
 
@@ -321,6 +305,62 @@ Panel {
           onClicked: adguard.updateFilters()
         }
       }
+    }
+  }
+
+  // One row shape for every on/off line, so a filter list and the HTTPS mode read alike.
+  // State is a leading check and a dimmed label, the way the OEM audio rows mark a device,
+  // rather than a switch on every row.
+  component StateRow: CursorSurface {
+    id: stateRow
+    required property int rowIndex
+    required property string label
+    required property bool on
+    signal triggered()
+
+    hasCursor: root.cursorActive && root.cursorIndex === rowIndex
+    foreground: root.foreground
+    implicitHeight: rowContent.implicitHeight + Style.spacing.rowPaddingX
+
+    Row {
+      id: rowContent
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.spacing.rowPaddingX
+      anchors.rightMargin: Style.spacing.rowPaddingX
+      spacing: Style.spacing.controlGap
+
+      Text {
+        width: Style.space(16)
+        horizontalAlignment: Text.AlignHCenter
+        anchors.verticalCenter: parent.verticalCenter
+        textFormat: Text.PlainText
+        text: stateRow.on ? "󰄲" : ""
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+      }
+
+      Text {
+        width: parent.width - Style.space(16) - Style.spacing.controlGap
+        anchors.verticalCenter: parent.verticalCenter
+        textFormat: Text.PlainText
+        elide: Text.ElideRight
+        text: stateRow.label
+        color: stateRow.on ? root.foreground : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+      }
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      enabled: !adguard.busy
+      onContainsMouseChanged: if (containsMouse) root.focusRow(stateRow.rowIndex)
+      onClicked: stateRow.triggered()
     }
   }
 }
