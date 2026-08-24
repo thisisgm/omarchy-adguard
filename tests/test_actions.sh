@@ -1,5 +1,4 @@
-# Actions, and the refusals they must notice. adguard-cli exits 0 whether or not it did the
-# work, so every case here asserts the state the helper observed rather than a status code.
+# adguard-cli exits 0 whether or not it did the work, so each case asserts observed state.
 
 reset_state
 printf 'false' >"$STUB_STATE/running"
@@ -10,8 +9,7 @@ assert_eq "protection on reports ok" "true" "$(printf '%s' "$out" | field ok)"
 out=$("$helper" protection off)
 assert_eq "protection off stops the proxy" "false" "$(printf '%s' "$out" | field running)"
 
-# The refusal cases. STUB_REFUSE makes every write a no-op while still exiting 0, which is
-# exactly the failure the helper must not report as success.
+# STUB_REFUSE makes every write a no-op while still exiting 0, the failure to catch.
 reset_state
 printf 'false' >"$STUB_STATE/running"
 out=$(STUB_REFUSE=1 "$helper" protection on)
@@ -31,9 +29,7 @@ reset_state
 assert_eq "a refused action still emits every field" "0" \
   "$("$helper" frobnicate | python3 -c 'import sys,json;d=json.load(sys.stdin);keys={"ok","installed","running","httpsFiltering","blockedToday","filters","exitNodeActive","error"};print(0 if keys<=set(d) else 1)')"
 
-# Absent AdGuard is the self-hide signal, so it must be reported rather than crashed on.
-# The PATH here holds only the coreutils the helper needs, because this box really does
-# ship adguard-cli in /usr/bin and a coarser PATH would still find it.
+# This PATH holds only the coreutils the helper needs, since the box ships adguard-cli in /usr/bin.
 reset_state
 bare_path="$repo_root/tests/.work/barepath"
 mkdir -p "$bare_path"
@@ -52,9 +48,7 @@ assert_eq "missing adguard-cli still emits valid JSON" "0" \
 reset_state
 assert_eq "an unchanged check-update says so" '"Everything is already up to date"' \
   "$("$helper" update | field updateSummary)"
-# The success line adguard-cli actually prints is "1 DNS filter(s) updated", four tokens.
-# A regex allowing only one token between the count and "updated" passed the three-token
-# form and silently inverted this one, so the shape is pinned here.
+# The live success line is the four-token "1 DNS filter(s) updated", inverted by an earlier regex.
 reset_state
 assert_eq "a four-token refresh line is recognised" '"Filters updated"' \
   "$(STUB_UPDATED=1 "$helper" update | field updateSummary)"
@@ -63,8 +57,7 @@ assert_eq "a zero count is not a refresh" '"Everything is already up to date"' \
   "$(STUB_UPDATED_ZERO=1 "$helper" update | field updateSummary)"
 assert_eq "status alone never claims an update" '""' "$("$helper" status | field updateSummary)"
 
-# A failing adguard-cli must be reported, never rendered as a healthy zero. Each of these
-# reproduced against the pre-fix helper as ok:true with an empty error.
+# Each of these reproduced against the pre-fix helper as ok:true with an empty error.
 reset_state
 out=$(STUB_FAIL=1 "$helper" status)
 assert_eq "a failing CLI is not reported ok" "false" "$(printf '%s' "$out" | field ok)"
@@ -79,21 +72,49 @@ assert_eq "a failed update is not reported as up to date" "false" "$(printf '%s'
 assert_eq "a failed update says so" '"Could not check for filter updates."' "$(printf '%s' "$out" | field error)"
 assert_eq "a failed update claims no summary" '""' "$(printf '%s' "$out" | field updateSummary)"
 
-# A control byte in a remote-sourced title used to make the whole document unparseable.
-# The first assertion proves the stub really injected, so a stub that stopped injecting
-# turns this case red instead of leaving the other two passing on the default state.
+# A control byte in a remote title used to make the whole document unparseable.
 reset_state
-assert_eq "the stub really injected the hostile title" "3" \
-  "$(STUB_CTRL=1 "$helper" status | python3 -c 'import sys,json
-print(sum(1 for f in json.load(sys.stdin)["filters"] if f["title"].startswith("Bad")))')"
+# Read the stub's own bytes, so a stub that stopped injecting turns this red.
+assert_eq "the stub really emits a control byte" "1" \
+  "$(STUB_CTRL=1 adguard-cli filters list | python3 -c 'import sys
+raw = sys.stdin.buffer.read()
+print(1 if any(b < 32 and b not in (9, 10, 13) for b in raw) else 0)')"
 assert_eq "a control byte in a title still parses" "0" \
   "$(STUB_CTRL=1 "$helper" status | python3 -m json.tool >/dev/null 2>&1 && echo 0 || echo 1)"
 assert_eq "the control byte is stripped from the title" "0" \
   "$(STUB_CTRL=1 "$helper" status | python3 -c 'import sys,json
 bad = [f for f in json.load(sys.stdin)["filters"] if any(ord(c) < 32 for c in f["title"])]
 print(len(bad))')"
-# The same three titles must be clean when nothing is injected, so the strip is not a no-op.
 reset_state
+# Pairs with the case above: the prefix is absent when nothing is injected.
 assert_eq "no hostile prefix appears without the stub flag" "0" \
   "$("$helper" status | python3 -c 'import sys,json
 print(sum(1 for f in json.load(sys.stdin)["filters"] if f["title"].startswith("Bad")))')"
+
+# The three branches added while fixing the rounds above, each reachable and each asserted.
+reset_state
+assert_eq "output this version cannot classify is not called up to date" '"Filters checked"' \
+  "$(STUB_UPDATED_ODD=1 "$helper" update | field updateSummary)"
+
+# A directory at the log path passes -e and -r, and GNU grep exits 2 on it.
+reset_state
+rm -f "$HOME/.local/share/adguard-cli/logs/access.log"
+mkdir -p "$HOME/.local/share/adguard-cli/logs/access.log"
+out=$("$helper" status)
+assert_eq "a log grep cannot read is not a zero" "false" "$(printf '%s' "$out" | field ok)"
+assert_eq "an unreadable log says so" '"Could not read the AdGuard access log."' "$(printf '%s' "$out" | field error)"
+rmdir "$HOME/.local/share/adguard-cli/logs/access.log"
+
+# An existing log with no read permission returns before grep, so it needs its own case.
+reset_state
+seed_access_log
+chmod 000 "$HOME/.local/share/adguard-cli/logs/access.log"
+out=$("$helper" status)
+assert_eq "an unreadable existing log is not a zero" "false" "$(printf '%s' "$out" | field ok)"
+assert_eq "a permission fault names the log" '"Could not read the AdGuard access log."' "$(printf '%s' "$out" | field error)"
+chmod 644 "$HOME/.local/share/adguard-cli/logs/access.log"
+
+# A log that is simply absent is a real zero and must stay quiet.
+reset_state
+assert_eq "an absent log is a real zero" "true" "$("$helper" status | field ok)"
+assert_eq "an absent log reports no blocks" "0" "$("$helper" status | field blockedToday)"

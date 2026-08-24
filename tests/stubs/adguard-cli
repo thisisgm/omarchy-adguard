@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Stub AdGuard CLI. State lives in files under $STUB_STATE so an action genuinely changes
-# what the next read returns. STUB_REFUSE=1 makes every write a silent no-op, which is how
-# the real adguard-cli behaves when it refuses a request and still exits 0.
+# Stub AdGuard CLI. State lives under $STUB_STATE; STUB_REFUSE=1 makes writes silent no-ops.
 set -uo pipefail
 
 state=${STUB_STATE:?STUB_STATE must be set}
@@ -84,14 +82,19 @@ filters)
   esac
   ;;
 check-update)
-  # STUB_UPDATED=1 makes check-update report a real refresh instead of a no-op.
-  printf 'Checking filters updates...\n'
-  if [[ ${STUB_UPDATED:-0} == "1" ]]; then
-    printf 'Up to date\nChecking DNS filters updates...\n1 DNS filter(s) updated\n'
-  elif [[ ${STUB_UPDATED_ZERO:-0} == "1" ]]; then
-    printf 'Up to date\n0 filter(s) updated\nChecking SafebrowsingV2 updates...\nUpdated\n'
+  # The steady state is the transcript the real CLI prints, bare "Updated" lines included.
+  if [[ ${STUB_UPDATED_ODD:-0} == "1" ]]; then
+    printf 'Something this version has never printed\n'
   else
-    printf 'Up to date\n'
+    printf 'Checking filters updates...\n'
+    if [[ ${STUB_UPDATED:-0} == "1" ]]; then
+      printf '1 filter(s) updated\nChecking DNS filters updates...\n1 DNS filter(s) updated\n'
+    elif [[ ${STUB_UPDATED_ZERO:-0} == "1" ]]; then
+      printf 'Up to date\nChecking DNS filters updates...\n0 filter(s) updated\n'
+    else
+      printf 'Up to date\nChecking DNS filters updates...\nUp to date\n'
+    fi
+    printf 'Checking SafebrowsingV2 updates...\nUpdated\nChecking CRLite updates...\nUpdated\nChecking app updates...\nUp to date\n'
   fi
   ;;
 esac

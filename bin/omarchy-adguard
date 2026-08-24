@@ -91,8 +91,12 @@ read_blocks() {
   local today lines count id rc
   filter_blocks="|"
   blocked_today=0
-  # The log does not exist until the proxy first runs, which is a real zero rather than a fault.
-  [[ -r $ACCESS_LOG ]] || return 0
+  # The log does not exist until the proxy first runs, which is a real zero.
+  [[ -e $ACCESS_LOG ]] || return 0
+  if [[ ! -r $ACCESS_LOG ]]; then
+    note_error "Could not read the AdGuard access log."
+    return 0
+  fi
   today=$(date +%d.%m.%Y)
   lines=$(grep "^${today}.*BLOCKED" "$ACCESS_LOG" 2>/dev/null)
   rc=$?
@@ -197,9 +201,8 @@ read_status() {
 summarise_update() {
   local line refreshed=0 unchanged=0
   while IFS= read -r line; do
-    # Only a non-zero count means a list moved; SafebrowsingV2 and CRLite report a bare
-    # "Updated" on every single run, so counting that would make the summary always positive.
-    if [[ $line =~ ^[1-9][0-9]*[[:space:]] ]]; then
+    # A bare "Updated" is printed every run by SafebrowsingV2 and CRLite, so it proves nothing.
+    if [[ $line =~ ^[1-9][0-9]*[[:space:]] && $line == *updated* ]]; then
       refreshed=1
     elif [[ $line == "Up to date" ]]; then
       unchanged=1
