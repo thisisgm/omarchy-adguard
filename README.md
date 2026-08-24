@@ -11,9 +11,10 @@ and flip protection with the switch.
 
 ## Features
 
-- **Today's blocks, broken down the way AdGuard breaks them down**: ads, trackers, social
-  widgets and threats. Every blocked request names the filter that matched it, so the
-  numbers are counted rather than estimated.
+- **Today's blocks, broken down the way AdGuard breaks them down**, one row per filter
+  category you have lists in, so ads, trackers, social widgets and threats on a stock
+  setup. Every blocked request names the filter that matched it, so the numbers are
+  counted rather than estimated.
 - **Protection switch.** Starts and stops the AdGuard proxy. Right click the bar mark to
   flip it without opening the panel.
 - **Filter and HTTPS filtering state**, and how long ago the lists last changed.
@@ -21,7 +22,8 @@ and flip protection with the switch.
   the button itself.
 - **Automatic filter updates** every six hours by default, driven by the lists' own
   timestamps rather than a stored clock, so restarting the shell neither loses the
-  schedule nor forces a fresh download. Set the interval to 0 to turn it off.
+  schedule nor forces a fresh download. A failed attempt waits thirty minutes before
+  trying again. Set the interval to 0 to turn it off.
 - **Tailscale exit node warning.** AdGuard's transparent proxy and a Tailscale exit node
   cannot both be on: the proxy opens its own outbound connection and the exit node's
   default route sends it back into the tunnel, so the machine loses internet. The panel
@@ -73,13 +75,14 @@ Left click opens the panel, right click toggles protection, middle click refresh
 
 ## IPC
 
-```bash
-omarchy-shell adguard open
-omarchy-shell adguard toggle
-omarchy-shell adguard protection
-omarchy-shell adguard update
-omarchy-shell adguard refresh
-```
+| Command | Effect |
+|---|---|
+| `omarchy-shell adguard open` | open the panel |
+| `omarchy-shell adguard close` | close the panel |
+| `omarchy-shell adguard toggle` | open or close the panel |
+| `omarchy-shell adguard protection` | start or stop filtering |
+| `omarchy-shell adguard update` | run the filter update check |
+| `omarchy-shell adguard refresh` | re-read the state now |
 
 ## Managing filter lists
 
@@ -125,8 +128,9 @@ key.
 omarchy plugin remove io.github.thisisgm.adguard
 ```
 
-The plugin writes no state of its own, so nothing is left behind. AdGuard's own
-configuration is untouched.
+The plugin writes no state of its own, and AdGuard's own configuration is untouched.
+Removing a plugin does not rewrite the bar layout, so the widget's entry stays in
+`~/.config/omarchy/shell.json` until you take that line out by hand.
 
 ## Support
 

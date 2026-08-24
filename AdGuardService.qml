@@ -66,11 +66,11 @@ Item {
   function apply(raw) {
     var s = Model.parseStatus(raw)
     root.polled = true
-    // An unreadable answer says nothing about AdGuard, so the last known state is kept.
+    // An unreadable answer says nothing about AdGuard, so both the last known state and a
+    // pending click's intent are left standing.
     if (!s.parsed) {
       root.ok = false
       root.lastError = s.error
-      root._desiredRunning = -1
       return
     }
     root.ok = s.ok
@@ -129,11 +129,6 @@ Item {
   Process {
     id: statusProcess
     command: [root.helperPath, "status"]
-    onExited: function(code) {
-      if (code === 0) return
-      root.lastError = "The AdGuard helper could not run."
-      root.polled = true
-    }
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
