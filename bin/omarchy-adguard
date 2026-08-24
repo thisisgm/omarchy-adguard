@@ -1,6 +1,5 @@
 #!/bin/bash
-# Reads and controls AdGuard for Linux for the omarchy-adguard bar widget.
-# Prints one JSON object on stdout and always exits 0, so the panel can always render.
+# Prints one JSON object for the omarchy-adguard bar widget and always exits 0.
 
 set -uo pipefail
 
@@ -10,6 +9,8 @@ readonly RUNNING_MARKER="The AdGuard proxy server is running"
 # tailscale prints "; exit node;" only while routing through one; idle peers say "; offers exit node;".
 readonly EXIT_NODE_MARKER="; exit node;"
 readonly ERROR_MAX_CHARS=140
+# check-update is network-bound, and a stall would leave the panel's spinner up for good.
+readonly UPDATE_TIMEOUT_SEC=90
 
 installed=false
 running=false
@@ -18,27 +19,26 @@ blocked_today=0
 exit_node_active=false
 error=""
 update_summary=""
-# Epoch of the most recent filter refresh, which is what "when did we last check" means.
 last_update_ts=0
 filters_json="[]"
-# Blocks attributed to each filter today, same shape: "|2:11|3:169|".
+# Blocks attributed to each filter today, "|2:11|3:169|".
 filter_blocks="|"
 
-# What the caller asked for, checked against reality after the write lands.
 want_kind=""
 want_value=""
+
+# Output of the last adguard-cli call, ANSI stripped.
+cli_out=""
 
 strip_ansi() {
   sed 's/\x1b\[[0-9;]*m//g'
 }
 
+# A title comes from a remote list, and one control byte would make the document unparseable.
 json_string() {
-  local s=$1
+  local s=${1//[[:cntrl:]]/}
   s=${s//\\/\\\\}
   s=${s//\"/\\\"}
-  s=${s//$'\t'/ }
-  s=${s//$'\n'/ }
-  s=${s//$'\r'/ }
   printf '"%s"' "$s"
 }
 
@@ -47,14 +47,25 @@ note_error() {
   return 0
 }
 
+# A failed call is reported, never folded into a zero the panel would present as fact.
+run_cli() {
+  local raw rc
+  raw=$(adguard-cli "$@" 2>/dev/null)
+  rc=$?
+  cli_out=$(printf '%s' "$raw" | strip_ansi)
+  return "$rc"
+}
+
 read_installed() {
   command -v adguard-cli >/dev/null 2>&1 && installed=true
 }
 
 read_running() {
-  local out
-  out=$(adguard-cli status 2>/dev/null | strip_ansi)
-  case "$out" in
+  if ! run_cli status; then
+    note_error "adguard-cli status failed."
+    return 0
+  fi
+  case "$cli_out" in
   *"$RUNNING_MARKER"*) running=true ;;
   *) running=false ;;
   esac
@@ -62,35 +73,33 @@ read_running() {
 
 # sample: https_filtering.enabled = true
 read_https_filtering() {
-  local out value
-  out=$(adguard-cli config get https_filtering.enabled 2>/dev/null | strip_ansi | head -1)
-  value=${out#*=}
+  local value
+  if ! run_cli config get https_filtering.enabled; then
+    note_error "adguard-cli could not read the HTTPS filtering setting."
+    return 0
+  fi
+  value=${cli_out%%$'\n'*}
+  value=${value#*=}
   value=${value// /}
   [[ $value == "true" ]] && https_filtering=true
 }
 
-# sample: 23.08.2026 19:56:36.991713 "curl" TLS - securepubads.g.doubleclick.net - - any BLOCKED 1 ID=2 ...
-read_blocked_today() {
-  local today count
-  [[ -r $ACCESS_LOG ]] || return 0
-  today=$(date +%d.%m.%Y)
-  # grep exits 1 when nothing matches, which is a legitimate zero rather than a failure.
-  count=$(grep -c "^${today}.*BLOCKED" "$ACCESS_LOG" 2>/dev/null)
-  [[ $count =~ ^[0-9]+$ ]] && blocked_today=$count
-}
-
-# Every BLOCKED line names the filter that matched, so the tally is exact rather than shared out.
 # sample: 23.08.2026 23:47:09 "slack" TLS - slackb.com - - any BLOCKED 1 ID=3 52.3.167.79:443 0b 2ms -- ||slackb.com^
-read_filter_blocks() {
-  local today line id count
+read_blocks() {
+  local today lines count id
   filter_blocks="|"
+  blocked_today=0
+  # The log does not exist until the proxy first runs, which is a real zero rather than a fault.
   [[ -r $ACCESS_LOG ]] || return 0
   today=$(date +%d.%m.%Y)
+  lines=$(grep "^${today}.*BLOCKED" "$ACCESS_LOG" 2>/dev/null)
+  [[ -n $lines ]] || return 0
+
+  blocked_today=$(printf '%s\n' "$lines" | grep -c .)
   while read -r count id; do
     [[ $id =~ ^[0-9]+$ ]] || continue
     filter_blocks+="${id}:${count}|"
-  done < <(grep "^${today}.*BLOCKED" "$ACCESS_LOG" 2>/dev/null |
-    grep -o "ID=[0-9]*" | cut -d= -f2 | sort | uniq -c)
+  done < <(printf '%s\n' "$lines" | grep -o "ID=[0-9]*" | cut -d= -f2 | sort | uniq -c)
 }
 
 blocks_for() {
@@ -103,15 +112,17 @@ blocks_for() {
 }
 
 # sample: [x] |            2 | AdGuard Base filter                     2026-08-23 19:06:48
-# sample: [ ] |            4 | AdGuard Social Media filter             Filter is disabled
 read_filters() {
-  local raw line mark rest id title enabled category="" first=1 out="[" stamp epoch
+  local line mark rest id title enabled category="" first=1 out="[" stamp epoch
 
-  raw=$(adguard-cli filters list 2>/dev/null | strip_ansi)
-  [[ -n $raw ]] || return 0
+  if ! run_cli filters list; then
+    note_error "adguard-cli could not list the filters."
+    return 0
+  fi
+  [[ -n $cli_out ]] || return 0
 
   while IFS= read -r line; do
-    # A line with no checkbox is either the column header or the category the rows below belong to.
+    # A line with no checkbox is either the column header or the category heading its rows.
     case "$line" in
     "[x] |"* | "[ ] |"*) ;;
     *)
@@ -132,43 +143,29 @@ read_filters() {
     [[ $id =~ ^[0-9]+$ ]] || continue
 
     title=${rest#*|}
-    # A refreshed filter carries its timestamp in the last column; a disabled one carries a
-    # note instead, so only the former can move the clock.
-    stamp=$(printf '%s' "$title" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]*$')
-    if [[ -n $stamp ]]; then
+    stamp=""
+    # The last column is a refresh timestamp on an enabled filter and a note on a disabled one.
+    if [[ $title =~ ^(.*[^[:space:]])[[:space:]][[:space:]]+([0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}|Filter\ is\ .*)[[:space:]]*$ ]]; then
+      title=${BASH_REMATCH[1]}
+      stamp=${BASH_REMATCH[2]}
+    fi
+    # read trims leading and trailing whitespace on its own, so no sed is needed for it.
+    read -r title <<<"$title"
+    [[ -n $title ]] || continue
+
+    if [[ $stamp =~ ^[0-9]{4}- ]]; then
       epoch=$(date -d "$stamp" +%s 2>/dev/null)
       [[ $epoch =~ ^[0-9]+$ ]] && ((epoch > last_update_ts)) && last_update_ts=$epoch
     fi
-    # The last column is either a timestamp or a "Filter is ..." note; both follow a run of spaces.
-    title=$(printf '%s' "$title" | sed -E 's/[[:space:]]{2,}([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]+|Filter is .*)[[:space:]]*$//')
-    title=$(printf '%s' "$title" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
-    [[ -n $title ]] || continue
 
     [[ $first -eq 1 ]] || out+=","
     first=0
     out+="{\"id\":${id},\"title\":$(json_string "$title"),\"enabled\":${enabled}"
     out+=",\"category\":$(json_string "$category"),\"blocked\":$(blocks_for "$id")}"
-  done <<<"$raw"
+  done <<<"$cli_out"
 
   out+="]"
   filters_json=$out
-}
-
-# sample: Checking filters updates... / Up to date / 1 DNS filter(s) updated / Updated
-summarise_update() {
-  local out=$1 changed
-  changed=$(printf '%s' "$out" | grep -ci "updated")
-  if [[ $changed -eq 0 ]]; then
-    printf 'Everything is already up to date'
-  else
-    printf 'Filters updated'
-  fi
-}
-
-cmd_update() {
-  local out
-  out=$(adguard-cli check-update 2>&1 | strip_ansi)
-  update_summary=$(summarise_update "$out")
 }
 
 read_exit_node() {
@@ -183,15 +180,34 @@ read_exit_node() {
 read_status() {
   read_running
   read_https_filtering
-  read_blocked_today
-  read_filter_blocks
+  read_blocks
   read_filters
   read_exit_node
 }
 
+# sample: Checking filters updates...\nUp to date\nChecking DNS filters updates...\n1 DNS filter(s) updated
+summarise_update() {
+  local changed
+  changed=$(printf '%s\n' "$1" | grep -cE '(^|[^0-9])[1-9][0-9]* [^ ]+ ?[^ ]*updated|^Updated$')
+  if [[ $changed -eq 0 ]]; then
+    printf 'Everything is already up to date'
+  else
+    printf 'Filters updated'
+  fi
+}
 
-# adguard-cli exits 0 even when it refuses the request, so intent is checked against
-# the state actually observed afterwards rather than against any exit code or message.
+cmd_update() {
+  local raw rc
+  raw=$(timeout "$UPDATE_TIMEOUT_SEC" adguard-cli check-update 2>/dev/null)
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    note_error "Could not check for filter updates."
+    return 0
+  fi
+  update_summary=$(summarise_update "$(printf '%s' "$raw" | strip_ansi)")
+}
+
+# adguard-cli exits 0 when it refuses, so intent is checked against the state observed after.
 verify_intent() {
   case "$want_kind" in
   protection)
@@ -224,8 +240,6 @@ cmd_protection() {
     ;;
   esac
 }
-
-
 
 main() {
   local command=${1:-status}

@@ -5,6 +5,12 @@
 set -uo pipefail
 
 state=${STUB_STATE:?STUB_STATE must be set}
+
+# STUB_FAIL=1 makes every query exit non-zero, the shape a broken or unreachable CLI takes.
+if [[ ${STUB_FAIL:-0} == "1" ]]; then
+  echo "cannot connect to the AdGuard daemon" >&2
+  exit 1
+fi
 running_file="$state/running"
 https_file="$state/https"
 filters_file="$state/filters"
@@ -30,6 +36,8 @@ render_filters() {
       mark=" "
       stamp="Filter is disabled"
     fi
+    # STUB_CTRL=1 puts a bare non-SGR escape in the title, which strip_ansi does not remove.
+    [[ ${STUB_CTRL:-0} == "1" ]] && title=$(printf 'Bad\x1b[2K%s' "$title")
     printf '[%s] | %12s | %-39s %s \n' "$mark" "$id" "$title" "$stamp"
   done <"$filters_file"
   printf 'To view the full list of available filters, please run `adguard-cli filters list --all`\n'

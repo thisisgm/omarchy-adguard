@@ -56,3 +56,28 @@ reset_state
 assert_eq "a real refresh says so instead" '"Filters updated"' \
   "$(STUB_UPDATED=1 "$helper" update | field updateSummary)"
 assert_eq "status alone never claims an update" '""' "$("$helper" status | field updateSummary)"
+
+# A failing adguard-cli must be reported, never rendered as a healthy zero. Each of these
+# reproduced against the pre-fix helper as ok:true with an empty error.
+reset_state
+out=$(STUB_FAIL=1 "$helper" status)
+assert_eq "a failing CLI is not reported ok" "false" "$(printf '%s' "$out" | field ok)"
+assert_eq "a failing CLI names the read that failed" '"adguard-cli status failed."' "$(printf '%s' "$out" | field error)"
+assert_eq "a failing CLI still emits valid JSON" "0" \
+  "$(STUB_FAIL=1 "$helper" status | python3 -m json.tool >/dev/null 2>&1 && echo 0 || echo 1)"
+assert_eq "a failing CLI still exits 0" "0" "$(STUB_FAIL=1 "$helper" status >/dev/null 2>&1; echo $?)"
+
+reset_state
+out=$(STUB_FAIL=1 "$helper" update)
+assert_eq "a failed update is not reported as up to date" "false" "$(printf '%s' "$out" | field ok)"
+assert_eq "a failed update says so" '"Could not check for filter updates."' "$(printf '%s' "$out" | field error)"
+assert_eq "a failed update claims no summary" '""' "$(printf '%s' "$out" | field updateSummary)"
+
+# A control byte in a remote-sourced title used to make the whole document unparseable.
+reset_state
+assert_eq "a control byte in a title still parses" "0" \
+  "$(STUB_CTRL=1 "$helper" status | python3 -m json.tool >/dev/null 2>&1 && echo 0 || echo 1)"
+assert_eq "the control byte is stripped from the title" "0" \
+  "$(STUB_CTRL=1 "$helper" status | python3 -c 'import sys,json
+bad = [f for f in json.load(sys.stdin)["filters"] if any(ord(c) < 32 for c in f["title"])]
+print(len(bad))')"
