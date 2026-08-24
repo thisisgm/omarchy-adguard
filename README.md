@@ -47,6 +47,9 @@ which is where that job belongs.
 
 ## Install
 
+AdGuard itself is manual setup: this plugin reads and drives `adguard-cli` but never
+installs, activates or licenses it. Do that first, then add the widget.
+
 ```bash
 omarchy plugin add https://github.com/thisisgm/omarchy-adguard.git --enable
 omarchy bar put io.github.thisisgm.adguard
@@ -80,9 +83,11 @@ Left click opens the panel, right click toggles protection, middle click refresh
 | `omarchy-shell adguard open` | open the panel |
 | `omarchy-shell adguard close` | close the panel |
 | `omarchy-shell adguard toggle` | open or close the panel |
-| `omarchy-shell adguard protection` | start or stop filtering |
-| `omarchy-shell adguard update` | run the filter update check |
 | `omarchy-shell adguard refresh` | re-read the state now |
+
+The IPC surface is read-only. Any process on the box can reach that socket, so starting
+or stopping filtering and running the update check stay in the panel, where the click is
+the confirmation. Script them against `adguard-cli` directly instead.
 
 ## Managing filter lists
 

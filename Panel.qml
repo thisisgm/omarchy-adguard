@@ -106,9 +106,9 @@ Panel {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
+    // Only reads are exposed: any local process can reach this socket, and starting or
+    // stopping filtering is the panel's own confirmed action rather than an IPC verb.
     function refresh(): string { adguard.refresh(); return "ok" }
-    function protection(): string { adguard.toggleProtection(); return "ok" }
-    function update(): string { adguard.updateFilters(); return "ok" }
   }
 
   BarIconButton {
