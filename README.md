@@ -4,6 +4,8 @@ System-wide ad and tracker filtering state and control for
 [AdGuard for Linux](https://adguard.com/en/adguard-linux/overview.html) on the Omarchy
 bar.
 
+![The panel](docs/panel.png)
+
 The shield sits in the bar and dims when filtering stops. Open it for the day's block
 count, the protection and HTTPS filtering switches, and a row per filter list.
 
@@ -15,7 +17,10 @@ count, the protection and HTTPS filtering switches, and a row per filter list.
 - **HTTPS filtering switch**, the escape hatch when a certificate-pinned site refuses to
   load through the filter.
 - **A row per filter list**, each one enabled or disabled in place.
-- **Update filters**, which runs AdGuard's own update check.
+- **Update filters**, which runs AdGuard's own update check. AdGuard adds a
+  language-specific list of its own accord while `auto_enable_language_filters` is on,
+  so a new row can appear after an update; `adguard-cli config set
+  auto_enable_language_filters false` stops that.
 - **Tailscale exit node warning.** AdGuard's transparent proxy and a Tailscale exit node
   cannot both be on: the proxy opens its own outbound connection and the exit node's
   default route sends it back into the tunnel, so the machine loses internet. The panel
