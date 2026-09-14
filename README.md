@@ -140,6 +140,7 @@ Removing a plugin does not rewrite the bar layout, so the widget's entry stays i
 ## Support
 
 If this saved you an afternoon, you can
+[sponsor me on GitHub](https://github.com/sponsors/thisisgm) or
 [buy me a coffee](https://buymeacoffee.com/thisisgm).
 
 ## Licence
